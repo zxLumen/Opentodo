@@ -66,6 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        chat.shutdown()
+    }
+
     @objc private func togglePanel() { panel.toggle() }
 
     @objc private func openSettings() {

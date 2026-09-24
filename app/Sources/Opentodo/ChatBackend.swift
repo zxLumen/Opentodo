@@ -60,6 +60,7 @@ final class ChatBackend: ObservableObject {
 
     /// 启动时预置 App 专属 opencode 配置（插件目录 + 隔离的 XDG 配置根 + 覆盖层），使首次对话前一切就绪。
     func prepareEnvironment() {
+        reapStaleServes()
         _ = writeProviderOverrides()
         _ = provisionPlugin()
         _ = provisionXdgConfigHome()
@@ -80,9 +81,19 @@ final class ChatBackend: ObservableObject {
             guard let self else { return }
             do {
                 try await self.ensureServer()
-                let sid = try await self.ensureSession()
+                var sid = try await self.ensureSession()
                 self.currentSessionID = sid
-                let reply = try await self.postMessage(sessionID: sid, text: trimmed)
+                var reply = try await self.postMessage(sessionID: sid, text: trimmed)
+                // 达到 agent 步数上限时：静默开新会话续聊，不把超限文案显示给用户，
+                // 也不动面板上的历史消息（只重开后端 session）。
+                var continueCount = 0
+                while !Task.isCancelled, Self.isStepLimit(reply), continueCount < 3 {
+                    continueCount += 1
+                    self.sessionID = nil
+                    sid = try await self.ensureSession()
+                    self.currentSessionID = sid
+                    reply = try await self.postMessage(sessionID: sid, text: "继续，不要重复已完成的")
+                }
                 if !Task.isCancelled {
                     self.messages.append(ChatMessage(role: "assistant", text: reply))
                 }
@@ -174,12 +185,67 @@ final class ChatBackend: ObservableObject {
 
     /// 终止自家 serve 并使会话/目录缓存失效；下次请求以最新配置重新拉起。
     func restartServe() {
-        serverProcess?.terminate()
+        terminateServer()
+        catalogCache = nil
+    }
+
+    /// App 退出时结束自起的 serve，避免残留孤儿进程占用端口与内存。
+    func shutdown() {
+        terminateServer()
+    }
+
+    private func terminateServer() {
+        guard let process = serverProcess else {
+            activePort = nil
+            sessionID = nil
+            currentSessionID = nil
+            return
+        }
         serverProcess = nil
         activePort = nil
         sessionID = nil
         currentSessionID = nil
-        catalogCache = nil
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        process.terminate()
+        // 兜底：1.5s 后仍未退出则 SIGKILL，确保不留孤儿。
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+            if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
+        }
+    }
+
+    /// 启动时回收上次遗留的、由本 App 拉起的 `opencode serve`
+    /// （通过环境变量 OPENCODE_CONFIG 指向我们的覆盖层来识别，不误杀用户的 TUI serve）。
+    private func reapStaleServes() {
+        let marker = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/opentodo/opencode-overrides.jsonc").path
+        guard let pids = runCommand("/usr/bin/pgrep", ["-f", "opencode serve"]) else { return }
+        for token in pids.split(whereSeparator: \.isNewline) {
+            guard let pid = Int(token.trimmingCharacters(in: .whitespaces)), pid > 0 else { continue }
+            guard let info = runCommand("/bin/ps", ["-E", "-p", "\(pid)"]), info.contains(marker) else { continue }
+            kill(pid_t(pid), SIGKILL)
+        }
+    }
+
+    private func runCommand(_ path: String, _ args: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = args
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = Pipe()
+        do { try process.run() } catch { return nil }
+        process.waitUntilExit()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// 识别 opencode 的"达到最大步数限制"提示（中英文）。
+    private static func isStepLimit(_ text: String) -> Bool {
+        text.contains("最大步骤限制")
+            || text.contains("工具已禁用")
+            || text.lowercased().contains("maximum steps")
+            || text.lowercased().contains("step limit")
     }
 
     /// 把钥匙串里的独立密钥写成 serve 覆盖配置（OPENCODE_CONFIG 指向它），返回配置文件路径。
@@ -322,6 +388,7 @@ final class ChatBackend: ObservableObject {
                 if await health(port: port) { return }
             }
             p.terminate()
+            if p.isRunning { kill(p.processIdentifier, SIGKILL) }
             serverProcess = nil
             activePort = nil
             throw NSError(domain: "opentodo", code: 1, userInfo: [
