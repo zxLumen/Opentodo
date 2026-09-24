@@ -209,11 +209,11 @@ struct TodoRow: View {
             // 点击（编辑）与拖拽（排序），不会误触。
             HStack(spacing: 8) {
                 if editing {
-                    TextField("", text: $draft)
+                    TextField("", text: $draft, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
+                        .lineLimit(1...6)
                         .focused($editFocused)
-                        .onSubmit(commitEdit)
                         .onExitCommand { editing = false }
                         .onChange(of: editFocused) { _, focused in if !focused { commitEdit() } }
                 } else {
@@ -349,7 +349,10 @@ private struct ProjectSidebarRow: View {
                 .foregroundStyle(selected ? Color.accentColor : .secondary)
             Text(name ?? TodoItem.inboxName)
                 .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                .lineLimit(1)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(name ?? TodoItem.inboxName)
             Spacer(minLength: 4)
             if count > 0 {
                 Text("\(count)")
@@ -487,7 +490,14 @@ struct TodoPanelView: View {
             }
             .buttonStyle(.plain)
             .help(ui.sidebarCollapsed ? "显示项目栏" : "隐藏项目栏")
-            Text("Opentodo").font(.system(size: 13, weight: .semibold))
+            Text(store.currentList ?? TodoItem.inboxName)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .help(store.currentList ?? TodoItem.inboxName)
+            Text("·")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
             Text("\(activeCount) 待办")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
