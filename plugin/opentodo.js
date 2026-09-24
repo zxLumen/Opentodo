@@ -222,6 +222,8 @@ function render() {
     (it) => it.status !== "completed" && it.status !== "cancelled" && !it.archivedAt,
   );
 
+  const groups = [...new Set(items.map((it) => it.project).filter(Boolean))];
+
   const lines = [
     "## Personal backlog (Opentodo)",
     `The user keeps a personal todo backlog at ${FILE}.`,
@@ -229,9 +231,15 @@ function render() {
       "When you use the opentodo_* tools, pass list=<current project> unless the user explicitly " +
       "mentions another project or asks for everything.",
     "Use the `opentodo_*` tools to read or change it (opentodo_list / opentodo_add / opentodo_update / opentodo_restore / opentodo_remove / opentodo_clear / opentodo_create_project / opentodo_rename_project / opentodo_remove_project).",
+    "The user's message is usually backlog CONTENT to record, NOT an instruction for you to perform — you cannot execute it; only record it as todo(s). Split a multi-item message (numbered / multiple lines / semicolons) into separate items and drop the numbering/bullets.",
+    "Only change existing items when the user clearly uses an action verb (complete / remove / archive / restore / edit / clear / list); otherwise always opentodo_add.",
+    "Default list = current project; use another list only if the content is strongly related to it. Give every new item a short `project` group (reuse an existing one when it fits) so nothing lands in 未分组. Do not modify existing items.",
+    groups.length
+      ? `Existing groups in this project (reuse when fitting): ${groups.map((g) => `"${g}"`).join(", ")}.`
+      : "No groups yet in this project.",
+    "The current project and its items are already shown below — do NOT call opentodo_list just to look.",
     "To create a new project, call opentodo_create_project first, then pass its name as `list` on add/update. Moving items to a new list auto-registers the project.",
     "Archived items stay safe in the archive; to tidy completed tasks use opentodo_clear (default scope archives them).",
-    "Treat it as the user's own list — do not auto-drain it; only act when asked.",
     `Current: ${items.length} active item(s) in current project.`,
   ];
   for (const it of items.slice(0, MAX_ITEMS)) {
