@@ -1,0 +1,22 @@
+node_modules/
+*.log
+.DS_Store
+
+# 本地数据（真相源在 ~/.config/opentodo，不应入库）
+todos.json
+todos.json.tmp.*
+todos.json.lock/
+
+# 构建产物
+app/.build/
+.build/
+dist/
+*.app
+
+# 大文件走 GitHub Release 资产，不入库
+release-assets/
+*.gif
+*.mov
+*.mp4
+*.zip
+*.dmg

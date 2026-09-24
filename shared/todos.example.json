@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "revision": 1,
+  "updatedAt": "2026-09-23T08:00:00.000Z",
+  "lists": ["blog", "work"],
+  "items": [
+    {
+      "id": "a1b2c3d4",
+      "content": "完成 ai lighting 项目",
+      "status": "in_progress",
+      "priority": "high",
+      "list": "work",
+      "project": "ai lighting",
+      "archivedAt": null,
+      "order": 1,
+      "createdAt": "2026-09-20T02:00:00.000Z",
+      "updatedAt": "2026-09-23T07:30:00.000Z",
+      "completedAt": null
+    },
+    {
+      "id": "e5f6a7b8",
+      "content": "在 blog 制作漂浮红绿灯组件",
+      "status": "pending",
+      "priority": "medium",
+      "list": "blog",
+      "project": "ai lighting",
+      "archivedAt": null,
+      "order": 2,
+      "createdAt": "2026-09-20T02:05:00.000Z",
+      "updatedAt": "2026-09-20T02:05:00.000Z",
+      "completedAt": null
+    },
+    {
+      "id": "c9d0e1f2",
+      "content": "blog 实现 token usage",
+      "status": "completed",
+      "priority": "medium",
+      "list": "blog",
+      "project": "机器人",
+      "archivedAt": null,
+      "order": 1,
+      "createdAt": "2026-09-18T01:00:00.000Z",
+      "updatedAt": "2026-09-22T10:00:00.000Z",
+      "completedAt": "2026-09-22T10:00:00.000Z"
+    },
+    {
+      "id": "1a2b3cf4",
+      "content": "blog 发布第一篇文章",
+      "status": "completed",
+      "priority": "low",
+      "list": "blog",
+      "project": null,
+      "archivedAt": "2026-09-23T08:00:00.000Z",
+      "order": 2,
+      "createdAt": "2026-09-10T01:00:00.000Z",
+      "updatedAt": "2026-09-23T08:00:00.000Z",
+      "completedAt": "2026-09-20T12:00:00.000Z"
+    }
+  ]
+}

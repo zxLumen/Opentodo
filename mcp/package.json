@@ -1,0 +1,21 @@
+{
+  "name": "opentodo-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local stdio MCP server for the Opentodo shared todo store",
+  "bin": {
+    "opentodo-mcp": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "smoke": "node smoke-test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
