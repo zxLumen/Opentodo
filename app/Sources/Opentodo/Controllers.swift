@@ -242,14 +242,13 @@ final class FloatingBallController {
 
     // MARK: - 几何
 
-    /// 完全滑出：球体贴在可见边缘内（使鼠标停在露出处时仍在球内）。
+    /// 完全滑出：球体完整位于屏幕内，并离可见边缘留出间距。
     private func revealedX(_ edge: Edge) -> CGFloat {
         guard let screen = panel.screen ?? NSScreen.main else { return panel.frame.origin.x }
         let v = screen.visibleFrame
-        let pad = BallMetrics.padding
         switch edge {
-        case .left: return v.minX - pad
-        case .right: return v.maxX - panel.frame.width + pad
+        case .left: return v.minX + edgeMargin
+        case .right: return v.maxX - panel.frame.width - edgeMargin
         }
     }
 
@@ -266,14 +265,19 @@ final class FloatingBallController {
         }
     }
 
+    /// 收起后露出的那一块（相对收起位置计算，与当前是否滑出无关）。
     private func hotZone() -> NSRect {
-        guard let screen = panel.screen ?? NSScreen.main else { return panel.frame }
-        let visible = panel.frame.intersection(screen.frame)
+        guard let edge, let screen = panel.screen ?? NSScreen.main else { return panel.frame }
+        var f = panel.frame
+        f.origin.x = retractedX(edge)
+        let visible = f.intersection(screen.frame)
         return visible.insetBy(dx: -10, dy: -10)
     }
 
+    /// 保持滑出的区域：滑出后的球框(+15) ∪ 边缘露出块。
+    /// 鼠标停在边缘露出处时也不会立即收回。
     private func keepZone() -> NSRect {
-        panel.frame.insetBy(dx: -15, dy: -15)
+        panel.frame.insetBy(dx: -15, dy: -15).union(hotZone())
     }
 
     private func defaultOrigin() -> NSPoint {
