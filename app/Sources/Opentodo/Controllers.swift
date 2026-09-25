@@ -11,6 +11,7 @@ final class KeyablePanel: NSPanel {
 /// mouse-up without movement counts as a click. We never use `performDrag`,
 /// which does not start on a non-activating panel.
 final class ClickDragHostingView<Content: View>: NSHostingView<Content> {
+    var onPress: (() -> Void)?
     var onClick: (() -> Void)?
     var onDragEnd: (() -> Void)?
     var contextMenu: NSMenu?
@@ -27,6 +28,7 @@ final class ClickDragHostingView<Content: View>: NSHostingView<Content> {
         startMouse = NSEvent.mouseLocation
         startOrigin = window?.frame.origin ?? .zero
         moved = false
+        onPress?()
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -54,11 +56,27 @@ final class ClickDragHostingView<Content: View>: NSHostingView<Content> {
 final class FloatingBallController {
     let panel: KeyablePanel
     var onClick: (() -> Void)?
+    /// 由 App 注入：待办面板是否打开（打开时气泡保持滑出，不收起）。
+    var isPanelOpen: () -> Bool = { false }
+
+    private enum Edge { case left, right }
 
     private let settings: AppSettings
     private let host: ClickDragHostingView<BallView>
     private let posKey = "opentodo.ball.origin"
     private var moveObserver: NSObjectProtocol?
+
+    private var edge: Edge?
+    private var retracted = false
+    private var armed = false
+    private var dragging = false
+    private var suppressSave = false
+    private var edgeTimer: Timer?
+
+    /// 收起时露出的球体比例（1/4）。
+    private let revealFraction: CGFloat = 0.25
+    private let edgeMargin: CGFloat = 10
+    private let snapDistance: CGFloat = 48
 
     init(store: TodoStore, settings: AppSettings) {
         self.settings = settings
@@ -79,16 +97,22 @@ final class FloatingBallController {
         panel.isReleasedWhenClosed = false
 
         host = ClickDragHostingView(rootView: BallView(store: store, settings: settings))
-        host.onClick = { [weak self] in self?.onClick?() }
-        host.onDragEnd = { [weak self] in self?.snapToEdge() }
+        host.onPress = { [weak self] in self?.pressBegan() }
+        host.onClick = { [weak self] in self?.pressEnded(); self?.onClick?() }
+        host.onDragEnd = { [weak self] in self?.pressEnded(); self?.snapToEdge() }
         panel.contentView = host
 
         moveObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didMoveNotification, object: panel, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.saveOrigin() }
+            MainActor.assumeIsolated {
+                guard let self, !self.suppressSave else { return }
+                self.saveOrigin(self.panel.frame.origin)
+            }
         }
     }
+
+    deinit { edgeTimer?.invalidate() }
 
     var frame: NSRect { panel.frame }
 
@@ -100,38 +124,156 @@ final class FloatingBallController {
     func show() {
         panel.setFrameOrigin(savedOrigin() ?? defaultOrigin())
         panel.orderFrontRegardless()
+        // 启动时按位置判定是否靠边，靠边则直接收起（无动画）。
+        snapToEdge(animated: false)
     }
 
     func resize() {
         let size = settings.ballDiameter + BallMetrics.padding
         panel.setContentSize(NSSize(width: size, height: size))
-        snapToEdge()
+        snapToEdge(animated: false)
     }
 
-    /// Snap to the nearest left/right edge only when close enough; otherwise
-    /// keep the dropped position (just clamped on-screen). The vertical position
-    /// is preserved either way.
-    func snapToEdge() {
+    /// 面板显隐变化时刷新（打开→保持滑出；关闭→若鼠标不在球上则收起）。
+    func refreshEdgeState() { tick() }
+
+    // MARK: - 交互
+
+    private func pressBegan() {
+        dragging = true
+        stopTimer()
+        // 点/拖收起中的气泡时先立即滑出，保证面板锚点位置正确。
+        if retracted { setRetracted(false, animated: false) }
+    }
+
+    private func pressEnded() {
+        dragging = false
+        updateTimer()
+    }
+
+    /// 吸附到最近的左/右边缘；靠边则收起，中间则普通贴边。
+    func snapToEdge(animated: Bool = true) {
         guard let screen = panel.screen ?? NSScreen.main else { return }
         let v = screen.visibleFrame
         let f = panel.frame
-        let margin: CGFloat = 10
-        let snapDistance: CGFloat = 48
 
-        var x = min(max(f.minX, v.minX + margin), v.maxX - f.width - margin)
-        var y = min(max(f.minY, v.minY + margin), v.maxY - f.height - margin)
+        var y = min(max(f.minY, v.minY + edgeMargin), v.maxY - f.height - edgeMargin)
+        if abs((y + f.height / 2) - v.midY) < 48 { y = v.midY - f.height / 2 }
 
-        if f.midX <= v.minX + snapDistance {
-            x = v.minX + margin
-        } else if f.midX >= v.maxX - snapDistance {
-            x = v.maxX - f.width - margin
+        var newEdge: Edge?
+        if f.midX <= v.minX + snapDistance { newEdge = .left }
+        else if f.midX >= v.maxX - snapDistance { newEdge = .right }
+
+        edge = newEdge
+        armed = false
+        dragging = false
+
+        let x: CGFloat
+        if let newEdge {
+            x = revealedX(newEdge)
+        } else {
+            x = min(max(f.minX, v.minX + edgeMargin), v.maxX - f.width - edgeMargin)
         }
-        if abs((y + f.height / 2) - v.midY) < 48 {
-            y = v.midY - f.height / 2
-        }
+        var target = f
+        target.origin = NSPoint(x: x, y: y)
+        moveSuppressed(animated: animated) { self.panel.setFrame(target, display: true, animate: animated) }
+        saveOrigin(target.origin)
 
-        panel.setFrame(NSRect(x: x, y: y, width: f.width, height: f.height), display: true, animate: true)
-        saveOrigin()
+        if newEdge != nil {
+            setRetracted(true, animated: animated)
+            armed = false
+        } else {
+            setRetracted(false, animated: animated)
+        }
+        updateTimer()
+    }
+
+    private func updateTimer() {
+        if edge != nil && !dragging {
+            guard edgeTimer == nil else { return }
+            let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tick() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            edgeTimer = timer
+        } else {
+            stopTimer()
+        }
+    }
+
+    private func stopTimer() {
+        edgeTimer?.invalidate()
+        edgeTimer = nil
+    }
+
+    /// 轮询鼠标位置：收起时鼠标进入露出块→滑出；滑出时鼠标离开→收起。
+    private func tick() {
+        guard edge != nil, !dragging else { return }
+        if isPanelOpen() {
+            if retracted { setRetracted(false, animated: true) }
+            return
+        }
+        let cursor = NSEvent.mouseLocation
+        if retracted {
+            if !hotZone().contains(cursor) { armed = true }
+            else if armed { setRetracted(false, animated: true) }
+        } else if !keepZone().contains(cursor) {
+            setRetracted(true, animated: true)
+            armed = false
+        }
+    }
+
+    private func setRetracted(_ value: Bool, animated: Bool) {
+        guard let edge, retracted != value else { return }
+        retracted = value
+        let x = value ? retractedX(edge) : revealedX(edge)
+        var f = panel.frame
+        f.origin.x = x
+        moveSuppressed(animated: animated) { self.panel.setFrame(f, display: true, animate: animated) }
+    }
+
+    private func moveSuppressed(animated: Bool, _ body: () -> Void) {
+        suppressSave = true
+        body()
+        DispatchQueue.main.asyncAfter(deadline: .now() + (animated ? 0.4 : 0.05)) { [weak self] in
+            self?.suppressSave = false
+        }
+    }
+
+    // MARK: - 几何
+
+    /// 完全滑出：球体贴在可见边缘内（使鼠标停在露出处时仍在球内）。
+    private func revealedX(_ edge: Edge) -> CGFloat {
+        guard let screen = panel.screen ?? NSScreen.main else { return panel.frame.origin.x }
+        let v = screen.visibleFrame
+        let pad = BallMetrics.padding
+        switch edge {
+        case .left: return v.minX - pad
+        case .right: return v.maxX - panel.frame.width + pad
+        }
+    }
+
+    /// 收起：把窗口推到物理屏幕边缘之外，只留 `revealFraction` 的球体可见。
+    private func retractedX(_ edge: Edge) -> CGFloat {
+        guard let screen = panel.screen ?? NSScreen.main else { return panel.frame.origin.x }
+        let full = screen.frame
+        let pad = BallMetrics.padding
+        let d = settings.ballDiameter
+        let visible = d * revealFraction
+        switch edge {
+        case .right: return full.maxX - pad - visible
+        case .left: return full.minX - d + visible - pad
+        }
+    }
+
+    private func hotZone() -> NSRect {
+        guard let screen = panel.screen ?? NSScreen.main else { return panel.frame }
+        let visible = panel.frame.intersection(screen.frame)
+        return visible.insetBy(dx: -10, dy: -10)
+    }
+
+    private func keepZone() -> NSRect {
+        panel.frame.insetBy(dx: -15, dy: -15)
     }
 
     private func defaultOrigin() -> NSPoint {
@@ -148,8 +290,8 @@ final class FloatingBallController {
         return p
     }
 
-    private func saveOrigin() {
-        UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: posKey)
+    private func saveOrigin(_ origin: NSPoint) {
+        UserDefaults.standard.set(NSStringFromPoint(origin), forKey: posKey)
     }
 }
 
@@ -235,6 +377,7 @@ final class PanelResizeBorderView: NSView {
 @MainActor
 final class TodoPanelController {
     let panel: KeyablePanel
+    var onVisibilityChanged: (() -> Void)?
     private let ballFrameProvider: () -> NSRect
     private let isPinned: () -> Bool
     private let ui: UIState
@@ -338,6 +481,7 @@ final class TodoPanelController {
         panel.orderFrontRegardless()
         panel.makeKey()
         ui.chatFocusPulse += 1
+        onVisibilityChanged?()
     }
 
     func position() {
@@ -352,6 +496,6 @@ final class TodoPanelController {
         panel.setFrameOrigin(origin)
     }
 
-    func hide() { panel.orderOut(nil) }
+    func hide() { panel.orderOut(nil); onVisibilityChanged?() }
     func toggle() { isVisible ? hide() : show() }
 }

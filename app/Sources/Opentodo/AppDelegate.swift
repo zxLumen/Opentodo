@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ballFrame: { [weak ball] in ball?.frame ?? .zero }
         )
         ball.onClick = { [weak self] in self?.panel.toggle() }
+        ball.isPanelOpen = { [weak self] in self?.panel.isVisible ?? false }
+        panel.onVisibilityChanged = { [weak ball] in ball?.refreshEdgeState() }
         ball.setMenu(buildMenu())
         ball.show()
 
