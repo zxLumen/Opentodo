@@ -52,13 +52,14 @@ final class TodoStore: ObservableObject {
         guard let data = try? Data(contentsOf: fileURL) else {
             if force {
                 items = []
-                lists = []
+                lists = Self.mergedLists(TodoFile())
                 revision = 0
                 hasLoaded = true
             }
             return
         }
-        guard let file = try? JSONDecoder().decode(TodoFile.self, from: data) else { return }
+        guard var file = try? JSONDecoder().decode(TodoFile.self, from: data) else { return }
+        Self.normalize(&file)
         if force || !hasLoaded || file.revision != revision {
             items = file.items
             lists = Self.mergedLists(file)
@@ -68,11 +69,24 @@ final class TodoStore: ObservableObject {
         }
     }
 
+    /// 数据自愈①：`list` 不允许为 null/空。旧数据（list == nil 的收件箱条目）
+    /// 统一归入项目「收件箱」，使其与其它项目行为完全一致、可拖/改名/删除。
+    nonisolated private static func normalize(_ file: inout TodoFile) {
+        for i in file.items.indices where file.items[i].list == nil || (file.items[i].list ?? "").isEmpty {
+            file.items[i].list = TodoItem.inboxName
+        }
+    }
+
     /// 条目中出现的项目若不在 lists 注册表里（例如 agent 通过 update 直接改 list），
     /// 读文件时自动并入，使项目立刻可见；下次写入时一并落盘。
+    /// 数据自愈②：注册表为空时预置默认项目「收件箱」。
     nonisolated static func mergedLists(_ file: TodoFile) -> [String] {
         var seen = Set(file.lists)
         var merged = file.lists
+        if merged.isEmpty {
+            merged.append(TodoItem.inboxName)
+            seen.insert(TodoItem.inboxName)
+        }
         let itemLists = file.items.compactMap(\.list).filter { !$0.isEmpty }
         for name in itemLists where !seen.contains(name) {
             seen.insert(name)
@@ -91,24 +105,27 @@ final class TodoStore: ObservableObject {
 
     // MARK: - Mutations
 
-    func add(content: String, priority: String = "medium", project: String? = nil, list: String? = nil) {
+    func add(content: String, priority: String = "medium", project: String? = nil, list: String? = nil, status: String = "pending") {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let target = (list?.isEmpty ?? true) ? TodoItem.inboxName : list!
         // 预生成，保证 transform 可重复执行（乐观更新 + 后台落盘各一次）。
         let newID = UUID().uuidString
         let created = Self.iso()
         persist { file in
             let nextOrder = file.items
-                .filter { $0.project == project && $0.list == list }
+                .filter { $0.project == project && $0.list == target }
                 .map(\.order).max() ?? 0
             file.items.append(TodoItem(
                 id: newID,
                 content: trimmed,
+                status: status,
                 priority: priority,
                 project: (project?.isEmpty ?? true) ? nil : project,
-                list: (list?.isEmpty ?? true) ? nil : list,
+                list: target,
                 order: nextOrder + 1,
-                createdAt: created
+                createdAt: created,
+                completedAt: status == "completed" ? created : nil
             ))
         }
     }
@@ -134,8 +151,9 @@ final class TodoStore: ObservableObject {
     }
 
     /// 把（当前项目内）已完成的待办全部移入归档；cancelled 维持现状。
+    /// 未选中项目（nil）视为当前项目 = 默认「收件箱」。
     func archiveCompleted() {
-        let cl = currentList
+        let cl = currentList ?? TodoItem.inboxName
         persist { file in
             for i in file.items.indices where file.items[i].status == "completed" && file.items[i].list == cl && file.items[i].archivedAt == nil {
                 file.items[i].archivedAt = Self.iso()
@@ -163,7 +181,7 @@ final class TodoStore: ObservableObject {
 
     /// 恢复当前项目的全部归档条目（清 archivedAt，status 保持不变）。
     func restoreArchived() {
-        let cl = currentList
+        let cl = currentList ?? TodoItem.inboxName
         persist { file in
             for i in file.items.indices where file.items[i].archivedAt != nil && file.items[i].list == cl {
                 file.items[i].archivedAt = nil
@@ -181,7 +199,7 @@ final class TodoStore: ObservableObject {
 
     /// 清空当前项目的归档（彻底删除，不可恢复；归档不属任何项目，scope=all 时清理全部）。
     func purgeArchived(allLists: Bool = false) {
-        let cl = currentList
+        let cl = currentList ?? TodoItem.inboxName
         persist { file in
             file.items.removeAll { it in
                 guard it.archivedAt != nil else { return false }
@@ -192,15 +210,11 @@ final class TodoStore: ObservableObject {
 
     // MARK: - Projects (lists)
 
-    var listNames: [String] {
-        var names = [TodoItem.inboxName]
-        names.append(contentsOf: lists.filter { !$0.isEmpty })
-        return names
-    }
+    var listNames: [String] { lists.filter { !$0.isEmpty } }
 
     func addList(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != TodoItem.inboxName else { return }
+        guard !trimmed.isEmpty else { return }
         persist { file in
             guard !file.lists.contains(trimmed) else { return }
             file.lists.append(trimmed)
@@ -209,7 +223,7 @@ final class TodoStore: ObservableObject {
 
     func renameList(oldName: String, to newName: String) {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != TodoItem.inboxName, oldName != trimmed else { return }
+        guard !trimmed.isEmpty, oldName != trimmed else { return }
         persist { file in
             guard let idx = file.lists.firstIndex(of: oldName) else { return }
             if file.lists.contains(trimmed) { return }
@@ -221,15 +235,14 @@ final class TodoStore: ObservableObject {
         if currentList == oldName { currentList = trimmed }
     }
 
-    /// 删除项目：其下条目安全移回收件箱（nil），不丢数据。
+    /// 删除项目：连同其下待办（含归档）一并彻底删除，不可恢复。
+    /// 收件箱是普通项目，行为与其它项目完全一致。
     func deleteList(name: String) {
         persist { file in
             file.lists.removeAll { $0 == name }
-            for i in file.items.indices where file.items[i].list == name {
-                file.items[i].list = nil
-            }
+            file.items.removeAll { $0.list == name }
         }
-        if currentList == name { currentList = nil }
+        if currentList == name { currentList = lists.first }
     }
 
     /// 调整项目顺序（左侧栏拖拽重排）。语义同 `Array.move(fromOffsets:toOffset:)`。
@@ -263,14 +276,15 @@ final class TodoStore: ObservableObject {
         }
     }
 
-    /// 把条目移动到另一个项目（list）；nil = 收件箱。子分组 `project` 保持不变，
+    /// 把条目移动到另一个项目（list）；nil 视为「收件箱」。子分组 `project` 保持不变，
     /// order 置为目标列表末尾。目标列表会在写入时经 `mergedLists` 自动登记。
     func moveToList(id: String, to list: String?) {
+        let target = (list?.isEmpty ?? true) ? TodoItem.inboxName : list!
         persist { file in
             guard let idx = file.items.firstIndex(where: { $0.id == id }) else { return }
-            guard file.items[idx].list != list else { return }
-            let maxOrder = file.items.filter { $0.list == list }.map(\.order).max() ?? 0
-            file.items[idx].list = list
+            guard file.items[idx].list != target else { return }
+            let maxOrder = file.items.filter { $0.list == target }.map(\.order).max() ?? 0
+            file.items[idx].list = target
             file.items[idx].order = maxOrder + 1
             file.items[idx].updatedAt = Self.iso()
         }
@@ -370,6 +384,7 @@ final class TodoStore: ObservableObject {
         )
         transform(&optimistic)
         Self.migrate(&optimistic)
+        Self.normalize(&optimistic)
         optimistic.lists = Self.mergedLists(optimistic)
         optimistic.revision += 1
         optimistic.updatedAt = Self.iso()
@@ -440,6 +455,7 @@ final class TodoStore: ObservableObject {
 
             transform(&file)
             migrate(&file)
+            normalize(&file)
             file.lists = mergedLists(file)
             file.revision += 1
             file.updatedAt = iso()

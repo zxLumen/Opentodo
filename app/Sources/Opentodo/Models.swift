@@ -58,6 +58,7 @@ struct TodoItem: Codable, Identifiable, Equatable {
         self.completedAt = completedAt
     }
 
+    /// 默认项目名。旧数据中 `list == nil` 的条目读取时统一归入此项。
     static let inboxName = "收件箱"
 
     var isDone: Bool { status == "completed" }

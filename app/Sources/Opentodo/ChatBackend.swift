@@ -413,10 +413,10 @@ final class ChatBackend: ObservableObject {
 
     private func postMessage(sessionID: String, text: String) async throws -> String {
         // 不上屏的上下文前缀：即使插件未注入，也保证按 App 当前项目归类。
-        let project = store.currentList
-        let listArg = project.map { "\"\($0)\"" } ?? "null"
+        let project = store.currentList ?? TodoItem.inboxName
+        let listArg = "\"\(project)\""
         let context =
-            "[Opentodo 上下文] 当前项目：\(project ?? "收件箱")。新增待办默认归入该项目（list=\(listArg)）；"
+            "[Opentodo 上下文] 当前项目：\(project)。新增待办默认归入该项目（list=\(listArg)）；"
             + "仅当用户明确指定其他项目或要求跨项目时才改变。\n\n"
         var body: [String: Any] = [
             "parts": [["type": "text", "text": context + text]],

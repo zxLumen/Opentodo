@@ -116,27 +116,37 @@ enum SelfTest {
         v1store.currentList = nil
         v1store.start()
         check(v1store.revision == 3, "v1 read keeps revision")
-        check(v1store.items.first?.list == nil && v1store.items.first?.archivedAt == nil, "v1 items get v2 default fields")
+        check(v1store.items.first?.list == TodoItem.inboxName && v1store.items.first?.archivedAt == nil, "v1 items get v2 default fields")
         v1store.add(content: "v2item")
         let v1rewritten = try? String(contentsOf: v1File, encoding: .utf8)
         check(v1rewritten?.contains("\"version\" : 2") == true, "write upgrades file to v2")
 
-        // Projects (lists): registry, rename, delete moves items to inbox
+        // Projects (lists): 收件箱 是默认普通项目；registry / rename / 统一删除
         let p = TodoStore(fileURL: dir.appendingPathComponent("lists.json"))
         p.currentList = nil
         p.start()
+        check(p.lists == [TodoItem.inboxName], "fresh store defaults to 收件箱 project")
+        check(p.listNames == [TodoItem.inboxName], "listNames exposes 收件箱 as a normal project")
         p.add(content: "inbox item")
         p.add(content: "work item", list: "work")
         p.addList(name: "work")
         p.addList(name: "blog")
-        check(p.lists == ["work", "blog"], "addList registers projects")
+        check(p.lists == [TodoItem.inboxName, "work", "blog"], "addList registers projects")
         check(p.items.first { $0.content == "work item" }?.list == "work", "add list scopes item")
-        check(p.items.first { $0.content == "inbox item" }?.list == nil, "inbox is null list")
+        check(p.items.first { $0.content == "inbox item" }?.list == TodoItem.inboxName, "nil list lands in 收件箱")
         p.renameList(oldName: "blog", to: "blog2")
-        check(p.lists == ["work", "blog2"], "renameList updates registry")
+        check(p.lists == [TodoItem.inboxName, "work", "blog2"], "renameList updates registry")
+        p.renameList(oldName: TodoItem.inboxName, to: "inbx")
+        check(p.lists == ["inbx", "work", "blog2"], "renameList renames 收件箱 like any project")
+        check(p.items.first { $0.content == "inbox item" }?.list == "inbx", "renameList rebinds its items")
+        p.renameList(oldName: "inbx", to: TodoItem.inboxName)
+        // deleteList 连同其下待办一并彻底删除
+        p.add(content: "work extra", list: "work")
+        check(p.items.filter { $0.list == "work" }.count == 2, "work project holds 2 items before delete")
         p.deleteList(name: "work")
         check(!p.lists.contains("work"), "deleteList removes registry")
-        check(p.items.first { $0.content == "work item" }?.list == nil, "deleteList moves items to inbox")
+        check(p.items.allSatisfy { $0.list != "work" }, "deleteList deletes its items")
+        check(p.items.count == 1, "deleteList drops only the deleted project's items")
 
         // moveToList crosses projects, keeps the sub-group, registers the target
         p.add(content: "cross", project: "grp")
@@ -146,9 +156,23 @@ enum SelfTest {
         check(p.items.first { $0.content == "cross" }?.project == "grp", "moveToList keeps sub-group")
         check(p.lists.contains("work"), "moveToList registers target list")
         p.moveToList(id: crossId, to: nil)
-        check(p.items.first { $0.content == "cross" }?.list == nil, "moveToList nil moves to inbox")
+        check(p.items.first { $0.content == "cross" }?.list == TodoItem.inboxName, "moveToList nil moves to 收件箱")
 
-        // moveList reorders the project registry
+        // deleteList 连同待办彻底删除，不影响其它项目
+        p.add(content: "doomed", list: "blog2")
+        let crossAlive = p.items.contains { $0.content == "cross" }
+        p.deleteList(name: "blog2")
+        check(!p.lists.contains("blog2"), "deleteList removes registry (blog2)")
+        check(p.items.filter { $0.content == "doomed" }.isEmpty, "deleteList deletes its items (doomed)")
+        check(p.items.contains { $0.content == "cross" } == crossAlive, "deleteList keeps other projects")
+
+        // 删除当前选中的项目后回落到存留的第一个项目
+        p.currentList = "work"
+        p.deleteList(name: "work")
+        check(p.currentList != "work", "deleting the current project falls back")
+        check(p.currentList == p.lists.first, "current project follows first remaining project")
+
+        // moveList reorders the project registry (收件箱 也是普通项目，可拖动)
         p.addList(name: "alpha")
         p.addList(name: "beta")
         p.moveList(name: "beta", before: "alpha")
@@ -157,6 +181,16 @@ enum SelfTest {
         check(p.lists.last == "beta", "moveList nil moves to end")
         p.moveLists(fromOffsets: IndexSet(integer: p.lists.firstIndex(of: "beta")!), toOffset: 0)
         check(p.lists.first == "beta", "moveLists reorders projects")
+
+        // add with explicit status (进行中 / 已完成)
+        let st = TodoStore(fileURL: dir.appendingPathComponent("status.json"))
+        st.currentList = nil
+        st.start()
+        st.add(content: "doing", status: "in_progress")
+        check(st.items.first { $0.content == "doing" }?.status == "in_progress", "add accepts in_progress status")
+        check(st.items.first { $0.content == "doing" }?.completedAt == nil, "in_progress has no completedAt")
+        st.add(content: "finished", status: "completed")
+        check(st.items.first { $0.content == "finished" }?.completedAt != nil, "completed status stamps completedAt")
 
         // Archive semantics: archive/unarchive/archiveCompleted/purge scoping
         let ar = TodoStore(fileURL: dir.appendingPathComponent("archive.json"))

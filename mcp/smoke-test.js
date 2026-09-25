@@ -74,10 +74,10 @@ const id3 = add3.match(/added (\w+)/)[1];
 
 const intoInbox = text(await client.callTool({ name: "update", arguments: { id: id3, list: "收件箱" } }));
 data = JSON.parse(fs.readFileSync(tmpFile, "utf8"));
-assert.strictEqual(data.items.find((i) => i.id === id3).list, null, "update list=收件箱 normalizes to inbox");
+assert.strictEqual(data.items.find((i) => i.id === id3).list, "收件箱", "update list=收件箱 keeps 收件箱 project");
 
 list = text(await client.callTool({ name: "list", arguments: { list: "收件箱" } }));
-assert.ok(list.includes(id3), "list param 收件箱 filters to inbox");
+assert.ok(list.includes(id3), "list param 收件箱 filters to 收件箱 project");
 
 const autoReg = text(await client.callTool({ name: "update", arguments: { id: id3, list: "隐项目" } }));
 data = JSON.parse(fs.readFileSync(tmpFile, "utf8"));
@@ -94,13 +94,10 @@ list = text(await client.callTool({ name: "list", arguments: { list: "显项目"
 assert.ok(list.includes(id3), "list param uses renamed project");
 
 const removedProj = text(await client.callTool({ name: "remove_project", arguments: { name: "显项目" } }));
-assert.match(removedProj, /removed project "显项目", 1 item\(s\) moved to inbox/);
+assert.match(removedProj, /removed project "显项目", 1 item\(s\) deleted/);
 data = JSON.parse(fs.readFileSync(tmpFile, "utf8"));
 assert.ok(!data.lists.includes("显项目"), "remove_project clears registry");
-assert.strictEqual(data.items.find((i) => i.id === id3).list, null, "remove_project moves items to inbox");
-
-const removed3 = text(await client.callTool({ name: "remove", arguments: { id: id3 } }));
-assert.match(removed3, /removed/);
+assert.ok(!data.items.some((i) => i.id === id3), "remove_project deletes its items");
 
 const finalData = JSON.parse(fs.readFileSync(tmpFile, "utf8"));
 assert.equal(finalData.items.length, 0);

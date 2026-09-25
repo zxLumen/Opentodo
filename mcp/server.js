@@ -39,9 +39,9 @@ function run(fn) {
 }
 
 function normList(value) {
-  if (value === undefined || value === null || value === "") return null;
+  if (value === undefined || value === null || value === "") return "收件箱";
   const s = String(value).trim();
-  return s === "" || s === "收件箱" ? null : s;
+  return s === "" ? "收件箱" : s;
 }
 
 server.registerTool(
@@ -57,7 +57,7 @@ server.registerTool(
       "Returns one line per item with its id, priority, list, project and content.",
     inputSchema: {
       status: z.enum(STATUS).optional().describe("Only return items with this status"),
-      list: z.string().optional().describe("Only items in this project/list (null=inbox is not matched here)"),
+      list: z.string().optional().describe("Only items in this project/list, e.g. 'work' or '博客'"),
       project: z.string().optional().describe("Only return items in this project/group/category"),
       include_completed: z
         .boolean()
@@ -101,7 +101,7 @@ server.registerTool(
     inputSchema: {
       content: z.string().min(1).describe("The task text"),
       priority: z.enum(PRIORITY).optional().describe("Default: medium"),
-      list: z.string().optional().describe("Project/list name, e.g. 'work' or 'blog' (default: inbox)"),
+      list: z.string().optional().describe("Project/list name, e.g. 'work' or 'blog' (default: 收件箱)"),
       project: z.string().optional().describe("Group/category within the list, e.g. 'ai lighting' or 'blog/vlog'"),
     },
   },
@@ -138,7 +138,7 @@ server.registerTool(
       content: z.string().optional(),
       status: z.enum(STATUS).optional(),
       priority: z.enum(PRIORITY).optional(),
-      list: z.string().nullable().optional().describe("Move to another project; null moves to inbox"),
+      list: z.string().nullable().optional().describe("Move to another project; null moves to 收件箱"),
       project: z.string().nullable().optional(),
       order: z.number().optional(),
       archived: z.boolean().optional().describe("Archive (true) or restore (false) the item"),
@@ -270,13 +270,12 @@ server.registerTool(
     run(() => {
       const trimmed = String(name || "").trim();
       if (!trimmed) throw new Error("project name empty");
-      if (trimmed === "收件箱") throw new Error("收件箱 is the default inbox, not a project");
       const { data } = update((d) => {
         if (!d.lists.includes(trimmed)) d.lists.push(trimmed);
         return trimmed;
       }, FILE);
       const exists = data.lists.includes(trimmed);
-      return ok(exists ? `project (created): ${trimmed}` : `project (exists): ${trimmed}\n\nprojects: ${data.lists.map((p) => `"${p}"`).join(", ") || "(inbox only)"}`);
+      return ok(exists ? `project (created): ${trimmed}` : `project (exists): ${trimmed}\n\nprojects: ${data.lists.map((p) => `"${p}"`).join(", ") || "(none)"}`);
     }),
 );
 
@@ -296,7 +295,6 @@ server.registerTool(
       const newN = String(newName || "").trim();
       if (!oldN || !newN) throw new Error("project names empty");
       if (oldN === newN) throw new Error("oldName and newName are the same");
-      if (newN === "收件箱") throw new Error("收件箱 is the default inbox, not a project");
       const { data } = update((d) => {
         if (!d.lists.includes(oldN)) throw new Error(`no project "${oldN}"`);
         if (d.lists.includes(newN)) throw new Error(`project exists: ${newN}`);
@@ -313,7 +311,7 @@ server.registerTool(
   {
     title: "Remove project",
     description:
-      "Delete a project from the registry. Its items are NOT deleted: they move safely to the inbox.",
+      "Delete a project AND all of its items (including archived) — irreversible. Requires explicit user confirmation.",
     inputSchema: { name: z.string().describe("Project name to remove") },
   },
   ({ name }) =>
@@ -324,11 +322,11 @@ server.registerTool(
         const idx = d.lists.indexOf(trimmed);
         if (idx === -1) throw new Error(`no project "${trimmed}"`);
         d.lists.splice(idx, 1);
-        let moved = 0;
-        for (const it of d.items) if (it.list === trimmed) { it.list = null; moved += 1; }
-        return moved;
+        const before = d.items.length;
+        d.items = d.items.filter((it) => it.list !== trimmed);
+        return before - d.items.length;
       }, FILE);
-      return ok(`removed project "${trimmed}", ${result} item(s) moved to inbox`);
+      return ok(`removed project "${trimmed}", ${result} item(s) deleted`);
     }),
 );
 

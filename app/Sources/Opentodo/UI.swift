@@ -71,7 +71,7 @@ struct BallView: View {
     private var style: BallStyle { settings.ballStyle }
 
     private var inList: [TodoItem] {
-        guard let list = store.currentList else { return store.items.filter { $0.list == nil } }
+        guard let list = store.currentList else { return [] }
         return store.items.filter { $0.list == list }
     }
 
@@ -188,6 +188,12 @@ struct TodoRow: View {
     var onArchive: (() -> Void)?
     var onRestore: (() -> Void)?
     var onRename: ((String) -> Void)?
+    /// 待办 → 进行中。
+    var onStart: (() -> Void)?
+    /// 待办/进行中 → 已取消。
+    var onCancel: (() -> Void)?
+    /// 已取消 → 待办。
+    var onReopen: (() -> Void)?
     var onDropBefore: (String) -> Bool
     var draggable: Bool = true
     @State private var hovering = false
@@ -219,8 +225,8 @@ struct TodoRow: View {
                 } else {
                     Text(item.content)
                         .font(.system(size: 13))
-                        .strikethrough(item.isDone, color: .secondary)
-                        .foregroundStyle(item.isDone ? .secondary : .primary)
+                        .strikethrough(item.isDone || isCancelled, color: .secondary)
+                        .foregroundStyle(item.isDone || isCancelled ? .secondary : .primary)
                         .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -230,6 +236,22 @@ struct TodoRow: View {
             .frame(maxWidth: .infinity)
 
             if hovering, !editing {
+                if let onStart {
+                    Button(action: onStart) {
+                        Image(systemName: "play.circle").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("开始（标记为进行中）")
+                }
+                if let onCancel {
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark.circle").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("取消")
+                }
                 if onRename != nil {
                     Button { beginEdit() } label: {
                         Image(systemName: "pencil").font(.system(size: 11))
@@ -253,6 +275,14 @@ struct TodoRow: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                     .help("恢复")
+                }
+                if let onReopen {
+                    Button(action: onReopen) {
+                        Image(systemName: "arrow.uturn.backward").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("重新打开")
                 }
                 Button(action: onDelete) {
                     Image(systemName: "trash").font(.system(size: 11))
@@ -300,10 +330,13 @@ struct TodoRow: View {
     }
 
     private var icon: String {
+        if isCancelled { return "minus.circle" }
         if item.isDone { return "checkmark.circle.fill" }
         if item.status == "in_progress" { return "circle.lefthalf.filled" }
         return "circle"
     }
+
+    private var isCancelled: Bool { item.status == "cancelled" }
 }
 
 /// 子分组末尾的"追加"投放带：悬停时在该分组下缘显示插入横杠。
@@ -382,6 +415,7 @@ private struct ProjectSidebarRow: View {
 
 enum PanelSection: String, CaseIterable {
     case active = "待办"
+    case inProgress = "进行中"
     case done = "已完成"
     case archive = "归档"
 }
@@ -394,23 +428,39 @@ struct TodoPanelView: View {
     var onToggleSidebar: () -> Void
 
     @State private var chatInput = ""
-    @State private var chatContentHeight: CGFloat = 0
     @State private var newTodo = ""
     @State private var section: PanelSection = .active
     @State private var showNewProject = false
     @State private var newProjectName = ""
     @State private var renamingProject: String?
     @State private var renameName = ""
-    @State private var confirmDeleteList = false
+    @State private var pendingDeleteName: String?
     @FocusState private var chatFocused: Bool
     @FocusState private var addFocused: Bool
 
+    /// 聊天框高度（用户拖动分隔条设置，持久化）。
+    @AppStorage("opentodo.chatHeight") private var storedChatHeight: Double = 160
+    @State private var dragStartChat: CGFloat?
+    /// list + 分隔条 + 聊天框 这块可分配区域的总高度。
+    @State private var regionHeight: CGFloat = 0
+    /// 聊天输入行的高度（用于计算聊天框上限，给待办框留空间）。
+    @State private var chatInputHeight: CGFloat = 0
+
     private let chatBottomID = "chatBottom"
     private let chatMinHeight: CGFloat = 64
-    private let chatMaxHeight: CGFloat = 220
+    private let chatDefaultHeight: CGFloat = 160
+    private let chatSplitterHeight: CGFloat = 6
+    private let listMinHeight: CGFloat = 110
+    private static let cancelledGroupName = "已取消"
 
-    private var chatHeight: CGFloat {
-        min(max(chatContentHeight, chatMinHeight), chatMaxHeight)
+    /// 聊天框高度上限：给待办框至少留 `listMinHeight`。
+    private var maxChatHeight: CGFloat {
+        guard regionHeight > 0 else { return max(chatMinHeight, CGFloat(storedChatHeight)) }
+        return max(chatMinHeight, regionHeight - listMinHeight - chatInputHeight - chatSplitterHeight)
+    }
+
+    private var effectiveChatHeight: CGFloat {
+        min(max(CGFloat(storedChatHeight), chatMinHeight), maxChatHeight)
     }
 
     var body: some View {
@@ -424,13 +474,21 @@ struct TodoPanelView: View {
                 Divider()
                 toolbar
                 Divider()
-                if section == .active {
-                    addBar
+                if section == .active || section == .inProgress {
+                    if store.lists.isEmpty { noProjectBar } else { addBar }
                     Divider()
                 }
-                list
-                Divider()
-                chatArea
+                VStack(spacing: 0) {
+                    list
+                    chatSplitter
+                    chatArea
+                }
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: RegionHeightKey.self, value: geo.size.height)
+                    }
+                )
+                .onPreferenceChange(RegionHeightKey.self) { regionHeight = $0 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -460,15 +518,14 @@ struct TodoPanelView: View {
             }
             Button("取消", role: .cancel) { renamingProject = nil }
         }
-        .confirmationDialog(
-            "删除项目「\(store.currentList ?? TodoItem.inboxName)」？其下待办会移回收件箱。",
-            isPresented: $confirmDeleteList,
-            titleVisibility: .visible
-        ) {
+        .alert("删除项目「\(pendingDeleteName ?? "")」？", isPresented: deleteAlertBinding) {
+            Button("取消", role: .cancel) { pendingDeleteName = nil }
             Button("删除", role: .destructive) {
-                if let name = store.currentList { store.deleteList(name: name) }
+                if let name = pendingDeleteName { store.deleteList(name: name) }
+                pendingDeleteName = nil
             }
-            Button("取消", role: .cancel) {}
+        } message: {
+            Text("其下 \(pendingDeleteName.flatMap(countIn) ?? 0) 条待办将一并删除，不可恢复。")
         }
         .onAppear { chatFocused = true }
         .onChange(of: ui.chatFocusPulse) { _, _ in chatFocused = true }
@@ -481,6 +538,18 @@ struct TodoPanelView: View {
         )
     }
 
+    /// 统一删除对话框（收件箱与普通项目行为一致）。
+    private var deleteAlertBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteName != nil },
+            set: { if !$0 { pendingDeleteName = nil } }
+        )
+    }
+
+    private func countIn(_ name: String) -> Int {
+        store.items.filter { $0.list == name }.count
+    }
+
     private var header: some View {
         HStack(spacing: 8) {
             Button {
@@ -490,18 +559,22 @@ struct TodoPanelView: View {
             }
             .buttonStyle(.plain)
             .help(ui.sidebarCollapsed ? "显示项目栏" : "隐藏项目栏")
-            Text(store.currentList ?? TodoItem.inboxName)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .help(store.currentList ?? TodoItem.inboxName)
-            Text("·")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Text("\(activeCount) 待办")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer()
+            HStack(spacing: 8) {
+                Text(store.currentList ?? TodoItem.inboxName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .help(store.currentList ?? TodoItem.inboxName)
+                Text("·")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text("\(activeCount) 待办")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
+            .background(WindowDragArea())
             Button {
                 ui.pinned.toggle()
             } label: {
@@ -529,6 +602,7 @@ struct TodoPanelView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .controlSize(.small)
             .frame(maxWidth: 220)
 
             Spacer(minLength: 0)
@@ -537,16 +611,18 @@ struct TodoPanelView: View {
             case .active:
                 if store.currentList != nil {
                     Button {
-                        confirmDeleteList = true
+                        pendingDeleteName = store.currentList
                     } label: {
-                        Text("清空项目")
+                        Text("删除项目")
                             .font(.system(size: 11))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.red.opacity(0.85))
-                    .help("删除当前项目，其下待办移回收件箱")
+                    .help("删除当前项目（连同其下待办一并删除）")
                     .disabled(sectionItems.isEmpty)
                 }
+            case .inProgress:
+                EmptyView()
             case .done:
                 Button {
                     store.archiveCompleted()
@@ -583,12 +659,26 @@ struct TodoPanelView: View {
         .padding(.vertical, 6)
     }
 
+    private var noProjectBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder.badge.plus")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Text("还没有项目，先新建一个再添加待办")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
     private var addBar: some View {
         HStack(spacing: 6) {
             Image(systemName: "plus.circle.fill")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.accentColor)
-            TextField("添加待办，回车即可…", text: $newTodo)
+            TextField(addPlaceholder, text: $newTodo)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .focused($addFocused)
@@ -606,10 +696,18 @@ struct TodoPanelView: View {
         .padding(.vertical, 6)
     }
 
+    private var addPlaceholder: String {
+        section == .inProgress ? "添加进行中的待办，回车即可…" : "添加待办，回车即可…"
+    }
+
     private func addTodo() {
         let text = newTodo.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        store.add(content: text, list: store.currentList)
+        store.add(
+            content: text,
+            list: store.currentList,
+            status: section == .inProgress ? "in_progress" : "pending"
+        )
         newTodo = ""
         addFocused = true
     }
@@ -623,29 +721,14 @@ struct TodoPanelView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 6)
             List(selection: projectSelection) {
-                ProjectSidebarRow(
-                    name: nil,
-                    selected: store.currentList == nil,
-                    count: activeCount(in: nil),
-                    dropEnabled: section == .active,
-                    onRename: nil,
-                    onDelete: nil,
-                    onDropTodo: { store.moveToList(id: $0, to: nil) }
-                )
-                .tag(TodoItem.inboxName)
-                .moveDisabled(true)
-                .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-
                 ForEach(store.lists, id: \.self) { name in
                     ProjectSidebarRow(
                         name: name,
                         selected: store.currentList == name,
                         count: activeCount(in: name),
-                        dropEnabled: section == .active,
+                        dropEnabled: reorderEnabled,
                         onRename: { renameName = name; renamingProject = name },
-                        onDelete: { store.currentList = name; confirmDeleteList = true },
+                        onDelete: { pendingDeleteName = name },
                         onDropTodo: { store.moveToList(id: $0, to: name) }
                     )
                     .tag(name)
@@ -681,7 +764,7 @@ struct TodoPanelView: View {
     private var projectSelection: Binding<String> {
         Binding(
             get: { store.currentList ?? TodoItem.inboxName },
-            set: { store.currentList = ($0 == TodoItem.inboxName) ? nil : $0 }
+            set: { store.currentList = $0 }
         )
     }
 
@@ -699,7 +782,7 @@ struct TodoPanelView: View {
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                     }
-                    if section == .active {
+                    if reorderEnabled, group.0 != Self.cancelledGroupName {
                         AppendDropZone { dragged in
                             store.move(id: dragged, toProject: group.0, beforeId: nil)
                         }
@@ -716,7 +799,8 @@ struct TodoPanelView: View {
                         .contentShape(Rectangle())
                         .padding(.vertical, 2)
                         .dropDestination(for: String.self) { ids, _ in
-                            guard section == .active, let payload = ids.first, payload.hasPrefix("todo:") else { return false }
+                            guard reorderEnabled, group.0 != Self.cancelledGroupName,
+                                  let payload = ids.first, payload.hasPrefix("todo:") else { return false }
                             store.move(id: String(payload.dropFirst("todo:".count)), toProject: group.0, beforeId: nil)
                             return true
                         }
@@ -743,11 +827,37 @@ struct TodoPanelView: View {
         }
         switch section {
         case .active:
+            if item.status == "cancelled" {
+                TodoRow(
+                    item: item,
+                    onToggle: { setStatus(item, "pending") },
+                    onDelete: { store.remove(id: item.id) },
+                    onRename: rename,
+                    onReopen: { setStatus(item, "pending") },
+                    onDropBefore: { _ in false },
+                    draggable: false
+                )
+            } else {
+                TodoRow(
+                    item: item,
+                    onToggle: { store.toggle(item) },
+                    onDelete: { store.remove(id: item.id) },
+                    onRename: rename,
+                    onStart: { setStatus(item, "in_progress") },
+                    onCancel: { setStatus(item, "cancelled") },
+                    onDropBefore: { dragged in
+                        store.move(id: dragged, toProject: item.project, beforeId: item.id)
+                        return true
+                    }
+                )
+            }
+        case .inProgress:
             TodoRow(
                 item: item,
                 onToggle: { store.toggle(item) },
                 onDelete: { store.remove(id: item.id) },
                 onRename: rename,
+                onCancel: { setStatus(item, "cancelled") },
                 onDropBefore: { dragged in
                     store.move(id: dragged, toProject: item.project, beforeId: item.id)
                     return true
@@ -776,9 +886,16 @@ struct TodoPanelView: View {
         }
     }
 
+    private func setStatus(_ item: TodoItem, _ status: String) {
+        var copy = item
+        copy.status = status
+        store.update(copy)
+    }
+
     private var emptyText: some View {
         let text = switch section {
         case .active: "这个项目还没有待办。在下面和 AI 说一句，比如「加一条：明天写周报」。"
+        case .inProgress: "没有进行中的待办。在「待办」里悬停某条，点「开始」就会移到这里。"
         case .done: "完成的任务会出现在这里，可以逐条归档，或点右上角「移入归档」。"
         case .archive: "归档为空。已完成的条目归档后会在这里，可恢复或彻底删除。"
         }
@@ -786,6 +903,38 @@ struct TodoPanelView: View {
             .font(.system(size: 12))
             .foregroundStyle(.secondary)
             .padding(.vertical, 18)
+    }
+
+    /// 待办框与聊天框之间的可拖动分隔条。
+    private var chatSplitter: some View {
+        ZStack {
+            Rectangle().fill(Color.clear)
+            Rectangle()
+                .fill(Color.primary.opacity(0.14))
+                .frame(height: 1)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: chatSplitterHeight)
+        .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            switch phase {
+            case .active: NSCursor.resizeUpDown.set()
+            case .ended: NSCursor.arrow.set()
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let start = dragStartChat ?? effectiveChatHeight
+                    if dragStartChat == nil { dragStartChat = start }
+                    let proposed = start - value.translation.height
+                    storedChatHeight = Double(min(max(proposed, chatMinHeight), maxChatHeight))
+                }
+                .onEnded { _ in dragStartChat = nil }
+        )
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded { storedChatHeight = Double(chatDefaultHeight) }
+        )
     }
 
     private var chatArea: some View {
@@ -815,18 +964,8 @@ struct TodoPanelView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: ChatContentHeightKey.self,
-                                value: geo.size.height
-                            )
-                        }
-                    )
                 }
-                .frame(height: chatHeight)
-                .animation(.easeOut(duration: 0.15), value: chatHeight)
-                .onPreferenceChange(ChatContentHeightKey.self) { chatContentHeight = $0 }
+                .frame(height: effectiveChatHeight)
                 .onAppear { scrollChatToBottom(proxy, animated: false) }
                 .onChange(of: chat.messages.count) { _, _ in scrollChatToBottom(proxy) }
                 .onChange(of: chat.busy) { _, _ in scrollChatToBottom(proxy) }
@@ -857,6 +996,12 @@ struct TodoPanelView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: ChatInputHeightKey.self, value: geo.size.height)
+                }
+            )
+            .onPreferenceChange(ChatInputHeightKey.self) { chatInputHeight = $0 }
         }
         .contentShape(Rectangle())
         .onTapGesture { chatFocused = true }
@@ -887,16 +1032,18 @@ struct TodoPanelView: View {
 
     private var activeCount: Int { itemsInList.filter(\.isActive).count }
 
-    /// 当前项目下的条目（收件箱 = list 为 nil）。
+    /// 当前项目下的条目。
     private var itemsInList: [TodoItem] {
-        guard let list = store.currentList else { return store.items.filter { $0.list == nil } }
+        guard let list = store.currentList else { return [] }
         return store.items.filter { $0.list == list }
     }
 
     private var sectionItems: [TodoItem] {
         switch section {
         case .active:
-            return itemsInList.filter { $0.status == "pending" || $0.status == "in_progress" || $0.status == "cancelled" }
+            return itemsInList.filter { $0.status == "pending" || $0.status == "cancelled" }
+        case .inProgress:
+            return itemsInList.filter { $0.status == "in_progress" && !$0.isArchived }
         case .done:
             return itemsInList.filter { $0.status == "completed" && !$0.isArchived }
         case .archive:
@@ -904,8 +1051,23 @@ struct TodoPanelView: View {
         }
     }
 
+    /// 待办 / 进行中允许拖动排序与拖入项目。
+    private var reorderEnabled: Bool { section == .active || section == .inProgress }
+
     private var groups: [(String, [TodoItem])] {
-        let sorted = sectionItems.sorted { a, b in
+        let pending = section == .active ? sectionItems.filter { $0.status != "cancelled" } : sectionItems
+        var result = groupedByProject(pending)
+        if section == .active {
+            let cancelled = sectionItems
+                .filter { $0.status == "cancelled" }
+                .sorted { $0.order < $1.order }
+            if !cancelled.isEmpty { result.append((Self.cancelledGroupName, cancelled)) }
+        }
+        return result
+    }
+
+    private func groupedByProject(_ items: [TodoItem]) -> [(String, [TodoItem])] {
+        let sorted = items.sorted { a, b in
             let pa = a.project ?? "", pb = b.project ?? ""
             if pa != pb { return pa < pb }
             return a.order < b.order
@@ -940,7 +1102,14 @@ struct TodoPanelView: View {
     }
 }
 
-private struct ChatContentHeightKey: PreferenceKey {
+private struct RegionHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct ChatInputHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())

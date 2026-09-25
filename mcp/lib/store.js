@@ -33,10 +33,7 @@ export function normalizeItem(raw = {}) {
     status,
     priority: PRIORITY.includes(raw.priority) ? raw.priority : "medium",
     project: raw.project == null || raw.project === "" ? null : String(raw.project),
-    list:
-      raw.list == null || raw.list === "" || String(raw.list).trim() === "收件箱"
-        ? null
-        : String(raw.list),
+    list: raw.list == null || raw.list === "" ? "收件箱" : String(raw.list),
     archivedAt: raw.archivedAt || null,
     order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 0,
     createdAt: raw.createdAt || now,
@@ -51,7 +48,12 @@ export function normalizeData(raw = {}) {
     ? [...new Set(raw.lists.map((l) => String(l)).filter(Boolean))]
     : [];
   // 自愈：条目里出现的项目若不在注册表中，合并进来，保证任何客户端读到的 lists 都完整。
+  // 与 app 一致：注册表为空时预置默认项目「收件箱」。
   const seen = new Set(lists);
+  if (lists.length === 0) {
+    lists.push("收件箱");
+    seen.add("收件箱");
+  }
   for (const it of items) {
     if (it.list && !seen.has(it.list)) {
       seen.add(it.list);

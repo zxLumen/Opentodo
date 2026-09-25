@@ -52,6 +52,37 @@ final class ClickDragHostingView<Content: View>: NSHostingView<Content> {
     }
 }
 
+/// A transparent strip that moves the panel window when dragged. Used for the
+/// header, since `isMovableByWindowBackground` is off (it would steal the
+/// splitter's drag gesture). `performDrag` does not start on a non-activating
+/// panel, so the window is moved manually like `ClickDragHostingView`.
+final class WindowDragNSView: NSView {
+    private var startMouse: NSPoint = .zero
+    private var startOrigin: NSPoint = .zero
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        startMouse = NSEvent.mouseLocation
+        startOrigin = window?.frame.origin ?? .zero
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window else { return }
+        let cur = NSEvent.mouseLocation
+        window.setFrameOrigin(NSPoint(
+            x: startOrigin.x + (cur.x - startMouse.x),
+            y: startOrigin.y + (cur.y - startMouse.y)
+        ))
+    }
+}
+
+struct WindowDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> WindowDragNSView { WindowDragNSView() }
+    func updateNSView(_ nsView: WindowDragNSView, context: Context) {}
+}
+
 @MainActor
 final class FloatingBallController {
     let panel: KeyablePanel
@@ -408,7 +439,9 @@ final class TodoPanelController {
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
         panel.isReleasedWhenClosed = false
-        panel.isMovableByWindowBackground = true
+        // 背景拖动会让可交互视图（如分隔条）的拖动手势被窗口移动抢走，
+        // 因此关闭它，改由标题栏的 WindowDragArea 手动移窗。
+        panel.isMovableByWindowBackground = false
         panel.minSize = NSSize(width: PanelMetrics.rightMinWidth, height: PanelMetrics.minHeight)
         panel.contentView = NSHostingView(
             rootView: TodoPanelView(

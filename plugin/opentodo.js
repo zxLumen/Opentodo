@@ -54,10 +54,7 @@ function normalizeItem(raw = {}) {
     status,
     priority: PRIORITY.includes(raw.priority) ? raw.priority : "medium",
     project: raw.project == null || raw.project === "" ? null : String(raw.project),
-    list:
-      raw.list == null || raw.list === "" || String(raw.list).trim() === "收件箱"
-        ? null
-        : String(raw.list),
+    list: raw.list == null || raw.list === "" ? "收件箱" : String(raw.list),
     archivedAt: raw.archivedAt || null,
     order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 0,
     createdAt: raw.createdAt || now,
@@ -72,6 +69,11 @@ function normalizeData(raw = {}) {
     ? [...new Set(raw.lists.map((l) => String(l)).filter(Boolean))]
     : [];
   const seen = new Set(lists);
+  // 与 app 一致：注册表为空时预置默认项目「收件箱」。
+  if (lists.length === 0) {
+    lists.push("收件箱");
+    seen.add("收件箱");
+  }
   for (const it of items) {
     if (it.list && !seen.has(it.list)) {
       seen.add(it.list);
@@ -202,9 +204,9 @@ function readActive() {
 }
 
 function normList(value) {
-  if (value === undefined || value === null || value === "") return null;
+  if (value === undefined || value === null || value === "") return "收件箱";
   const s = String(value).trim();
-  return s === "" || s === "收件箱" ? null : s;
+  return s === "" ? "收件箱" : s;
 }
 
 function guard(fn) {
@@ -227,7 +229,7 @@ function render() {
   const lines = [
     "## Personal backlog (Opentodo)",
     `The user keeps a personal todo backlog at ${FILE}.`,
-    `Current project: ${active ? `"${active}"` : "inbox (no project)"}. ` +
+    `Current project: ${active ? `"${active}"` : `"收件箱" (default)`}. ` +
       "When you use the opentodo_* tools, pass list=<current project> unless the user explicitly " +
       "mentions another project or asks for everything.",
     "Use the `opentodo_*` tools to read or change it (opentodo_list / opentodo_add / opentodo_update / opentodo_restore / opentodo_remove / opentodo_clear / opentodo_create_project / opentodo_rename_project / opentodo_remove_project).",
@@ -261,7 +263,7 @@ const tools = {
       "Returns one line per item with its id, priority, list, project and content.",
     args: {
       status: tool.schema.enum(STATUS).optional().describe("Only return items with this status"),
-      list: tool.schema.string().optional().describe("Only items in this project/list (null=inbox is not matched here)"),
+      list: tool.schema.string().optional().describe("Only items in this project/list, e.g. 'work' or '博客'"),
       project: tool.schema.string().optional().describe("Only return items in this project/group/category"),
       include_completed: tool.schema.boolean().optional().describe("Include completed/cancelled items (default true)"),
       include_archived: tool.schema.boolean().optional().describe("Include archived items (default false)"),
@@ -297,7 +299,7 @@ const tools = {
     args: {
       content: tool.schema.string().min(1).describe("The task text"),
       priority: tool.schema.enum(PRIORITY).optional().describe("Default: medium"),
-      list: tool.schema.string().optional().describe("Project/list name, e.g. 'work' or 'blog' (default: inbox)"),
+      list: tool.schema.string().optional().describe("Project/list name, e.g. 'work' or 'blog' (default: 收件箱)"),
       project: tool.schema.string().optional().describe("Group/category within the list, e.g. 'ai lighting' or 'blog/vlog'"),
     },
     execute: async ({ content, priority, list, project }) =>
@@ -330,7 +332,7 @@ const tools = {
       content: tool.schema.string().optional(),
       status: tool.schema.enum(STATUS).optional(),
       priority: tool.schema.enum(PRIORITY).optional(),
-      list: tool.schema.string().nullable().optional().describe("Move to another project; null moves to inbox"),
+      list: tool.schema.string().nullable().optional().describe("Move to another project; null moves to 收件箱"),
       project: tool.schema.string().nullable().optional(),
       order: tool.schema.number().optional(),
       archived: tool.schema.boolean().optional().describe("Archive (true) or restore (false) the item"),
@@ -442,12 +444,11 @@ const tools = {
       guard(() => {
         const trimmed = String(name || "").trim();
         if (!trimmed) throw new Error("project name empty");
-        if (trimmed === "收件箱") throw new Error("收件箱 is the default inbox, not a project");
         const { data } = update((d) => {
           if (!d.lists.includes(trimmed)) d.lists.push(trimmed);
           return trimmed;
         }, FILE);
-        return `project (created): ${trimmed}\n\nprojects: ${data.lists.map((p) => `"${p}"`).join(", ") || "(inbox only)"}`;
+        return `project (created): ${trimmed}\n\nprojects: ${data.lists.map((p) => `"${p}"`).join(", ") || "(none)"}`;
       }),
   }),
 
@@ -463,7 +464,6 @@ const tools = {
         const newN = String(newName || "").trim();
         if (!oldN || !newN) throw new Error("project names empty");
         if (oldN === newN) throw new Error("oldName and newName are the same");
-        if (newN === "收件箱") throw new Error("收件箱 is the default inbox, not a project");
         update((d) => {
           if (!d.lists.includes(oldN)) throw new Error(`no project "${oldN}"`);
           if (d.lists.includes(newN)) throw new Error(`project exists: ${newN}`);
@@ -477,7 +477,7 @@ const tools = {
 
   opentodo_remove_project: tool({
     description:
-      "Delete a project from the registry. Its items are NOT deleted: they move safely to the inbox.",
+      "Delete a project AND all of its items (including archived) — irreversible. Requires explicit user confirmation.",
     args: { name: tool.schema.string().describe("Project name to remove") },
     execute: async ({ name }) =>
       guard(() => {
@@ -487,11 +487,11 @@ const tools = {
           const idx = d.lists.indexOf(trimmed);
           if (idx === -1) throw new Error(`no project "${trimmed}"`);
           d.lists.splice(idx, 1);
-          let moved = 0;
-          for (const it of d.items) if (it.list === trimmed) { it.list = null; moved += 1; }
-          return moved;
+          const before = d.items.length;
+          d.items = d.items.filter((it) => it.list !== trimmed);
+          return before - d.items.length;
         }, FILE);
-        return `removed project "${trimmed}", ${result} item(s) moved to inbox`;
+        return `removed project "${trimmed}", ${result} item(s) deleted`;
       }),
   }),
 };
