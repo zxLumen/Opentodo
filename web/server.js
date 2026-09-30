@@ -23,7 +23,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { read } from '../mcp/lib/store.js'
+import { read, update, normalizeItem } from '../mcp/lib/store.js'
 import { ops, runOp } from './ops.js'
 import { chatState, listModels, saveSettings, setApiKey } from './settings.js'
 import { runChat } from './chat.js'
@@ -72,6 +72,69 @@ function parseCookies(req) {
 
 /** 博客的会话 cookie —— 与 zxLumen-Blog/src/lib/auth.ts 一致 */
 const BLOG_ADMIN_COOKIE = 'zx_admin'
+/** 站长「以访客身份查看」用的 cookie(值是某访客的 cid);仅站长可设 */
+const VIEW_COOKIE = 'zx_todo_view'
+
+/** 访客首次进来时自带一个「使用提示」项目(几条说明当待办条目) */
+const WELCOME_LIST = '使用提示'
+const WELCOME_TIPS = [
+  '点底部输入框回车,就能快速加一条待办',
+  '按住条目可拖动排序;拖到左侧项目名上可移动过去',
+  '点条目行尾的文件夹图标,给它一个分组',
+  '底部可以直接和 AI 说话,比如「加一条 下周一交周报」',
+  '左侧「项目」是互相独立的清单,可新建 / 改名 / 删除',
+]
+
+/** 访客数据文件不存在时,写入「使用提示」项目 + 若干条目 */
+function ensureVisitorSeed(file) {
+  if (fs.existsSync(file)) return
+  try {
+    const now = new Date().toISOString()
+    update((d) => {
+      d.lists = [WELCOME_LIST]
+      WELCOME_TIPS.forEach((content, i) => {
+        d.items.push(
+          normalizeItem({ content, list: WELCOME_LIST, order: i + 1, createdAt: now, updatedAt: now }),
+        )
+      })
+    }, file)
+  } catch {
+    /* 建种子失败不影响主流程 */
+  }
+}
+
+/** 列出所有访客数据文件(供站长查看) */
+function listVisitors() {
+  let names = []
+  try {
+    names = fs.readdirSync(VISITORS_DIR).filter((f) => /^[a-f0-9]{16}\.json$/.test(f))
+  } catch {
+    return []
+  }
+  const out = []
+  for (const f of names) {
+    const cid = f.slice(0, 16)
+    try {
+      const fp = path.join(VISITORS_DIR, f)
+      const d = JSON.parse(fs.readFileSync(fp, 'utf8'))
+      const items = Array.isArray(d.items) ? d.items : []
+      const active = items.filter(
+        (it) => !it.archivedAt && (it.status === 'pending' || it.status === 'in_progress'),
+      )
+      out.push({
+        cid,
+        count: items.length,
+        active: active.length,
+        updatedAt: d.updatedAt || new Date(fs.statSync(fp).mtimeMs).toISOString(),
+        sample: (active[0] || items[0])?.content ?? '',
+      })
+    } catch {
+      /* 坏文件跳过 */
+    }
+  }
+  out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+  return out
+}
 
 /**
  * 校验博客的 `zx_admin` 会话:`<exp>.<hmac_sha256(exp, SESSION_SECRET)>`(hex),
@@ -106,8 +169,14 @@ function resolveScope(req) {
     cid = crypto.randomBytes(8).toString('hex')
     setCookies.push(`zx_todo_cid=${cid}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly`)
   }
-  const file = owner ? OWNER_FILE : path.join(VISITORS_DIR, `${cid}.json`)
-  return { owner, cid, file, setCookies }
+  // 站长可「切到某个访客」查看/管理其数据:owner + zx_todo_view=<访客 cid>
+  const view = c[VIEW_COOKIE]
+  const viewing = owner && /^[a-f0-9]{16}$/.test(view || '') ? view : null
+  const file =
+    owner && !viewing ? OWNER_FILE : path.join(VISITORS_DIR, `${viewing || cid}.json`)
+  // 访客首次访问:给一份「使用提示」种子
+  if (!owner && !viewing) ensureVisitorSeed(file)
+  return { owner, cid, viewing, file, setCookies }
 }
 
 function send(res, status, body, headers = {}) {
@@ -126,6 +195,14 @@ async function readBody(req) {
   const text = Buffer.concat(chunks).toString('utf8')
   if (!text.trim()) return {}
   return JSON.parse(text)
+}
+
+/** 追加一条 Set-Cookie(不覆盖已设的) */
+function addCookie(res, cookie) {
+  const cur = res.getHeader('Set-Cookie')
+  const arr = Array.isArray(cur) ? cur : cur ? [cur] : []
+  arr.push(cookie)
+  res.setHeader('Set-Cookie', arr)
 }
 
 const MIME = {
@@ -223,7 +300,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/health') return send(res, 200, { ok: true, owner: scope.owner })
 
     if (pathname === '/api/state' && req.method === 'GET') {
-      return send(res, 200, { data: read(scope.file), owner: scope.owner })
+      return send(res, 200, { data: read(scope.file), owner: scope.owner, viewing: scope.viewing })
     }
 
     if (pathname === '/api/op' && req.method === 'POST') {
@@ -236,6 +313,27 @@ const server = http.createServer(async (req, res) => {
 
     /* ---------- 聊天设置(仅站长) ---------- */
     const ownerOnly = () => send(res, 403, { error: '仅站长可用' })
+
+    /* ---------- 访客管理(仅站长) ---------- */
+    if (pathname === '/api/visitors' && req.method === 'GET') {
+      if (!scope.owner) return ownerOnly()
+      return send(res, 200, { visitors: listVisitors(), viewing: scope.viewing })
+    }
+    if (pathname === '/api/visitors/view' && req.method === 'POST') {
+      if (!scope.owner) return ownerOnly()
+      const body = await readBody(req)
+      const v = typeof body.cid === 'string' ? body.cid.trim() : ''
+      if (v && !/^[a-f0-9]{16}$/.test(v)) return send(res, 400, { error: 'cid 非法' })
+      addCookie(
+        res,
+        v
+          ? `${VIEW_COOKIE}=${v}; Path=/; SameSite=Lax; HttpOnly`
+          : `${VIEW_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly`,
+      )
+      // 注意:用**新**的 cid 读文件,不能用本请求开头算出的 scope.file(那是切换前的)
+      const file = v ? path.join(VISITORS_DIR, `${v}.json`) : OWNER_FILE
+      return send(res, 200, { data: read(file), owner: true, viewing: v || null })
+    }
     if (pathname === '/api/chat/state' && req.method === 'GET') {
       return send(res, 200, chatState(scope.owner, VISITOR_AI))
     }

@@ -69,14 +69,24 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [chatBusy, setChatBusy] = useState(false)
   const streamAbort = useRef<AbortController | null>(null)
+  /** 数据域:是否站长 / 正在查看哪个访客的 cid */
+  const [scope, setScope] = useState<{ owner: boolean; viewing: string | null }>({
+    owner: false,
+    viewing: null,
+  })
+  const [visitors, setVisitors] = useState<
+    { cid: string; count: number; active: number; updatedAt: string; sample: string }[]
+  >([])
+  const [visOpen, setVisOpen] = useState(false)
 
   const alive = useRef(true)
 
   const load = useCallback(async () => {
     try {
-      const d = await fetchState()
+      const s = await fetchState()
       if (alive.current) {
-        setData(d)
+        setData(s.data)
+        setScope({ owner: s.owner, viewing: s.viewing })
         setError(null)
       }
     } catch (e) {
@@ -108,6 +118,53 @@ export default function App() {
       }
     },
     [],
+  )
+
+  /* ---------- 站长:查看访客 ---------- */
+  const loadVisitors = useCallback(async () => {
+    try {
+      const res = await fetch('/api/visitors')
+      if (res.ok) {
+        const j = (await res.json()) as { visitors?: typeof visitors }
+        setVisitors(j.visitors ?? [])
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [])
+  useEffect(() => {
+    if (scope.owner) void loadVisitors()
+  }, [scope.owner, loadVisitors])
+  // 点外面关掉访客浮层
+  useEffect(() => {
+    if (!visOpen) return
+    const close = (e: PointerEvent) => {
+      if ((e.target as HTMLElement).closest('.vis-pop, .vis-btn')) return
+      setVisOpen(false)
+    }
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [visOpen])
+  const viewVisitor = useCallback(
+    async (cid: string | null) => {
+      try {
+        const res = await fetch('/api/visitors/view', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cid }),
+        })
+        if (res.ok) {
+          const j = (await res.json()) as { data: typeof data; viewing: string | null }
+          setData(j.data)
+          setScope((s) => ({ ...s, viewing: j.viewing }))
+          setVisOpen(false)
+          void loadVisitors()
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+    [loadVisitors],
   )
 
   // 项目列表为空时兜底收件箱;当前选中的项目若被删了,回到第一个
@@ -475,6 +532,44 @@ export default function App() {
             {list} <span className="h-sub">· {total} 待办</span>
           </span>
           <span className="spacer" />
+          {scope.owner && (
+            <div className="vis-wrap">
+              <button
+                className="icon-btn vis-btn"
+                title="查看访客"
+                onClick={() => setVisOpen((v) => !v)}
+              >
+                👥
+              </button>
+              {visOpen && (
+                <div className="vis-pop">
+                  <div className="vis-head">
+                    <span>访客({visitors.length})</span>
+                    {scope.viewing && (
+                      <button className="vis-back" type="button" onClick={() => void viewVisitor(null)}>
+                        返回我的
+                      </button>
+                    )}
+                  </div>
+                  {visitors.length === 0 && <div className="vis-empty">还没有访客数据</div>}
+                  {visitors.map((v) => (
+                    <button
+                      key={v.cid}
+                      type="button"
+                      className={`vis-item${scope.viewing === v.cid ? ' is-active' : ''}`}
+                      onClick={() => void viewVisitor(v.cid)}
+                    >
+                      <span className="vis-cid">{v.cid.slice(0, 8)}</span>
+                      <span className="vis-sample">{v.sample || '(空)'}</span>
+                      <span className="vis-count">
+                        {v.active}/{v.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {chat?.owner && (
             <button className="icon-btn" title="聊天设置" onClick={() => setSettingsOpen(true)}>
               ⚙
@@ -484,6 +579,15 @@ export default function App() {
             <IconRefresh />
           </button>
         </header>
+
+        {scope.viewing && (
+          <div className="vis-banner">
+            正在查看访客 <b>{scope.viewing.slice(0, 8)}</b> 的待办
+            <button type="button" onClick={() => void viewVisitor(null)}>
+              返回我的
+            </button>
+          </div>
+        )}
 
         <div className="toolbar">
           <div className="tabs">

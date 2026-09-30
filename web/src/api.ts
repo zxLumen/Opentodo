@@ -8,10 +8,15 @@ async function json<T>(res: Response): Promise<T> {
   return body as T
 }
 
-export async function fetchState(): Promise<TodoFile> {
+export interface StateResp {
+  data: TodoFile
+  owner: boolean
+  viewing: string | null
+}
+
+export async function fetchState(): Promise<StateResp> {
   const res = await fetch('/api/state', { cache: 'no-store' })
-  const { data } = await json<{ data: TodoFile }>(res)
-  return data
+  return json<StateResp>(res)
 }
 
 /** 应用一个操作,返回新状态。op 名与 server.js 的 ops 表一致。 */
