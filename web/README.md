@@ -29,8 +29,13 @@ npm start              # → http://localhost:8787
 
 - **每个访客一份独立数据**:服务端给每个访客发 `zx_todo_cid` cookie,数据落
   `data/visitors/<cid>.json` —— 访客之间、以及和站长的数据**完全隔离**。
-- **站长**:访问 `/?owner=<token>` 认领身份(token 存 `data/owner.token`,启动时会打印
-  「站长入口」;`OPENTODO_OWNER_TOKEN` 可覆盖)。认领后读写的是 `OPENTODO_FILE` 那份额。
+- **站长**:两种方式认定 ——
+  1. **与博客共用登录(推荐)**:本地两边用**同一个 `SESSION_SECRET`**,你在博客 `/admin`
+     登录后,本应用本地验签博客的 `zx_admin` cookie 即视为站长(登出即失效)。
+     ⚠️ 本地 cookie 只看主机不看端口,所以博客与 iframe 要用**同一个 host**(都 `localhost`);
+     生产把博客的 `ADMIN_COOKIE_DOMAIN=.你的域名` 配上,子域 `todo.<域名>` 才收得到。
+  2. **owner token(兜底)**:直接访问 `/?owner=<token>`(token 存 `data/owner.token`,
+     启动打印;`OPENTODO_OWNER_TOKEN` 可覆盖),不开博客时也能当站长。
 - **AI 站长/访客都能用**:LLM 对话走**站长配的 provider/model/密钥**(访客编辑的是自己那份数据)。
   默认放行访客;`OPENTODO_VISITOR_AI=0` 可关掉(关掉后访客只能用本地快速模式)。
   聊天**配置 / 密钥**仍**仅站长**可改(访客看不到 ⚙)。

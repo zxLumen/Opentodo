@@ -70,12 +70,37 @@ function parseCookies(req) {
   return out
 }
 
+/** 博客的会话 cookie —— 与 zxLumen-Blog/src/lib/auth.ts 一致 */
+const BLOG_ADMIN_COOKIE = 'zx_admin'
+
+/**
+ * 校验博客的 `zx_admin` 会话:`<exp>.<hmac_sha256(exp, SESSION_SECRET)>`(hex),
+ * 与博客 `auth.ts` 同一套算法。登录博客即视为本应用的站长;登出即失效。
+ * 未配 SESSION_SECRET(或没带 cookie)则不算。
+ */
+function validBlogAdmin(req) {
+  const secret = process.env.SESSION_SECRET
+  if (!secret) return false
+  const v = parseCookies(req)[BLOG_ADMIN_COOKIE]
+  if (!v) return false
+  const i = v.indexOf('.')
+  if (i < 1) return false
+  const exp = Number(v.slice(0, i))
+  const sig = v.slice(i + 1)
+  if (!Number.isFinite(exp) || exp < Date.now() || !sig) return false
+  const expected = crypto.createHmac('sha256', secret).update(String(exp)).digest('hex')
+  const a = Buffer.from(sig)
+  const b = Buffer.from(expected)
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
+}
+
 /** 按 cookie 判定「站长 / 访客」,并给出该请求对应的数据文件 */
 function resolveScope(req) {
   const c = parseCookies(req)
   const setCookies = []
   const token = ownerToken()
-  const owner = !!token && c.zx_todo_owner === token
+  // 站长:① 博客登录态(SSO,推荐)② 直接访问用的 owner token(兜底)
+  const owner = (!!token && c.zx_todo_owner === token) || validBlogAdmin(req)
   let cid = c.zx_todo_cid
   if (!/^[a-f0-9]{16}$/.test(cid || '')) {
     cid = crypto.randomBytes(8).toString('hex')

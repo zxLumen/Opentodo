@@ -6,10 +6,10 @@
   "description": "Opentodo 的 Web 版:与桌面 App / opencode 插件 / MCP 共用同一份 todos.json",
   "scripts": {
     "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
-    "dev:api": "node --watch server.js",
+    "dev:api": "node --env-file-if-exists=.env --watch server.js",
     "dev:web": "vite",
     "build": "vite build",
-    "start": "node server.js",
+    "start": "node --env-file-if-exists=.env server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
