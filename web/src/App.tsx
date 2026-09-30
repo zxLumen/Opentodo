@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { applyOp, fetchState } from './api'
 import { CANCELLED_GROUP, INBOX, UNGROUPED, type Priority, type TodoFile, type TodoItem } from './types'
 import { useProjectDrag, useRowDrag } from './useRowDrag'
+import { fastIntent } from './intent'
 import {
   IconChecklist,
   IconPlus,
@@ -54,6 +55,14 @@ export default function App() {
   const [projectMenu, setProjectMenu] = useState<string | null>(null)
   /** 正在就地重命名的项目名 */
   const [renamingProject, setRenamingProject] = useState<string | null>(null)
+  /** 对话消息(快速模式本地处理;将来可接 LLM) */
+  const [messages, setMessages] = useState<{ role: 'user' | 'assistant' | 'system'; text: string }[]>(
+    [],
+  )
+  const [chatInput, setChatInput] = useState('')
+  const [chatHeight, setChatHeight] = useState(160)
+  const chatListRef = useRef<HTMLDivElement>(null)
+  const splitRef = useRef<{ y0: number; h0: number } | null>(null)
 
   const alive = useRef(true)
 
@@ -229,6 +238,58 @@ export default function App() {
   }, [projectMenu])
 
   const total = visible.length
+
+  // 对话区高度:读档 + 存档
+  useEffect(() => {
+    const h = Number(window.localStorage.getItem('zx.todo.chatHeight'))
+    if (Number.isFinite(h) && h >= 64) setChatHeight(h)
+  }, [])
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('zx.todo.chatHeight', String(chatHeight))
+    } catch {
+      /* ignore */
+    }
+  }, [chatHeight])
+  // 新消息滚到底
+  useEffect(() => {
+    chatListRef.current?.scrollTo({ top: chatListRef.current.scrollHeight })
+  }, [messages.length])
+
+  const sendChat = () => {
+    const text = chatInput.trim()
+    if (!text) return
+    setChatInput('')
+    setMessages((m) => [...m, { role: 'user', text }])
+    // 快速模式:本地直接处理明确指令,不调模型
+    const r = fastIntent(text, items, list)
+    if (!r) {
+      setMessages((m) => [
+        ...m,
+        {
+          role: 'system',
+          text: '这句需要模型,暂未接入。可以先试「加一条 …」「完成 …」「列出待办」这类明确指令。',
+        },
+      ])
+      return
+    }
+    for (const o of r.ops) void run(o.op, o.args)
+    setMessages((m) => [...m, { role: 'assistant', text: r.reply }])
+  }
+
+  const onSplitDown = (e: React.PointerEvent) => {
+    splitRef.current = { y0: e.clientY, h0: chatHeight }
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  }
+  const onSplitMove = (e: React.PointerEvent) => {
+    const d = splitRef.current
+    if (!d) return
+    const h = Math.min(Math.max(d.h0 - (e.clientY - d.y0), 64), Math.max(120, window.innerHeight - 300))
+    setChatHeight(h)
+  }
+  const onSplitUp = () => {
+    splitRef.current = null
+  }
 
   return (
     <div className="panel">
@@ -458,6 +519,52 @@ export default function App() {
               ))}
             </div>
           ))}
+        </div>
+
+        <div
+          className="splitter"
+          title="拖动调整对话高度,双击复位"
+          onPointerDown={onSplitDown}
+          onPointerMove={onSplitMove}
+          onPointerUp={onSplitUp}
+          onPointerCancel={onSplitUp}
+          onDoubleClick={() => setChatHeight(160)}
+        />
+
+        <div className="chat" style={{ height: chatHeight }}>
+          <div className="chat-list" ref={chatListRef}>
+            {messages.length === 0 && (
+              <div className="chat-empty">和 AI 说句话,帮你增删改待办。试试「加一条 写周报」。</div>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className={`bubble ${m.role}`}>
+                {m.text}
+              </div>
+            ))}
+          </div>
+          <div className="chat-input">
+            <textarea
+              value={chatInput}
+              placeholder="和 AI 说点什么…"
+              rows={1}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  sendChat()
+                }
+              }}
+            />
+            <button
+              className="send"
+              type="button"
+              disabled={!chatInput.trim()}
+              onClick={sendChat}
+              title="发送"
+            >
+              ➤
+            </button>
+          </div>
         </div>
 
         <footer className="foot">

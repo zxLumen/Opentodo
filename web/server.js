@@ -143,10 +143,12 @@ const ops = {
     }
   },
 
-  // 批量:清空某项目的归档(彻底删除;对齐 purgeArchived)
-  purgeArchived(d, { list }) {
-    const target = normList(list)
-    d.items = d.items.filter((it) => !(it.list === target && it.archivedAt))
+  // 批量:清空归档(彻底删除;对齐 purgeArchived)。allLists=true 时清所有项目。
+  purgeArchived(d, { list, allLists }) {
+    d.items = d.items.filter((it) => {
+      if (!it.archivedAt) return true
+      return allLists ? false : it.list !== normList(list)
+    })
   },
 
   // 彻底删除
