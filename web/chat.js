@@ -17,16 +17,67 @@ import { ensureUrl, isOpenCodeGo, protocolOf } from './providers.js'
 const UA = 'opentodo-web/0.1 (+https://github.com/zxLumen/Opentodo)'
 const MAX_ROUNDS = 6
 
-/** 工具定义(与 ops 对齐) */
+/**
+ * 工具定义(与 ops 对齐)。
+ *
+ * ⚠️ 参数命名:项目(todolist)叫 `list`,项目内的分组/分类叫 `group`(不叫 project)——
+ * 中文里「项目」= list,若分组参数也叫 project,模型会把「当前项目」塞进分组里
+ * (实测:list 落「收件箱」、分组变成项目名)。落库时再由 normalizeArgs 把 group→project。
+ * 每个参数都写清 description,别让模型猜。
+ */
 const TOOL_DEFS = [
-  { name: 'add', desc: '新增一条待办', params: { content: { type: 'string' }, list: { type: 'string' }, project: { type: 'string' }, priority: { type: 'string', enum: ['high', 'medium', 'low'] }, status: { type: 'string', enum: ['pending', 'in_progress'] } }, required: ['content'] },
-  { name: 'update', desc: '修改一条待办的内容/优先级/分组', params: { id: { type: 'string' }, content: { type: 'string' }, priority: { type: 'string' }, project: { type: 'string' } }, required: ['id'] },
-  { name: 'setStatus', desc: '修改一条待办的状态', params: { id: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] } }, required: ['id', 'status'] },
+  {
+    name: 'add',
+    desc: '新增一条待办',
+    params: {
+      content: { type: 'string', description: '待办内容' },
+      list: { type: 'string', description: '项目(todolist)名。省略=当前项目;只有用户明确说到别的项目时才传' },
+      group: { type: 'string', description: '项目内的分组/分类名。可省略' },
+      priority: { type: 'string', enum: ['high', 'medium', 'low'], description: '优先级,默认 medium' },
+      status: { type: 'string', enum: ['pending', 'in_progress'], description: '默认 pending' },
+    },
+    required: ['content'],
+  },
+  {
+    name: 'update',
+    desc: '修改一条待办的内容/优先级/分组',
+    params: {
+      id: { type: 'string', description: '条目 id(取自当前项目列表)' },
+      content: { type: 'string', description: '新内容' },
+      group: { type: 'string', description: '新的分组/分类(null 或空 = 移出分组)' },
+      priority: { type: 'string', enum: ['high', 'medium', 'low'], description: '新优先级' },
+    },
+    required: ['id'],
+  },
+  {
+    name: 'setStatus',
+    desc: '修改一条待办的状态',
+    params: {
+      id: { type: 'string' },
+      status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] },
+    },
+    required: ['id', 'status'],
+  },
   { name: 'toggle', desc: '勾选/取消完成一条待办', params: { id: { type: 'string' } }, required: ['id'] },
-  { name: 'setArchived', desc: '归档(true)或恢复(false)一条待办', params: { id: { type: 'string' }, archived: { type: 'boolean' } }, required: ['id', 'archived'] },
+  {
+    name: 'setArchived',
+    desc: '归档(true)或恢复(false)一条待办',
+    params: { id: { type: 'string' }, archived: { type: 'boolean' } },
+    required: ['id', 'archived'],
+  },
   { name: 'remove', desc: '彻底删除一条待办', params: { id: { type: 'string' } }, required: ['id'] },
-  { name: 'move', desc: '修改一条待办的分组(project)', params: { id: { type: 'string' }, toProject: { type: 'string' } }, required: ['id'] },
-  { name: 'moveToList', desc: '把一条待办移到另一个项目(list)', params: { id: { type: 'string' }, list: { type: 'string' } }, required: ['id', 'list'] },
+  {
+    name: 'move',
+    desc: '修改一条待办的分组(不换项目)',
+    params: { id: { type: 'string' }, toGroup: { type: 'string', description: '目标分组/分类' } },
+    required: ['id', 'toGroup'],
+  },
+  {
+    name: 'moveToList',
+    desc: '把一条待办移到另一个项目',
+    params: { id: { type: 'string' }, list: { type: 'string', description: '目标项目名' } },
+    required: ['id', 'list'],
+  },
   { name: 'addList', desc: '新建一个项目', params: { name: { type: 'string' } }, required: ['name'] },
 ]
 
@@ -41,31 +92,70 @@ function openAiTools() {
   }))
 }
 
+/**
+ * 工具/指令里的参数 → op 参数。统一入口:
+ *  - group→project、toGroup→toProject(数据契约里分组字段叫 project)
+ *  - add 省略 list 时用当前项目(否则会落进「收件箱」—— 之前的 bug)
+ *  - update 的工具参数是扁平的,op 要的是 { id, patch } —— 包一层(否则 patch 恒为 {} 静默失效)
+ */
+function normalizeArgs(name, raw, currentList) {
+  const a = { ...raw }
+  if (a.group !== undefined && a.project === undefined) {
+    a.project = a.group
+    delete a.group
+  }
+  if (a.toGroup !== undefined && a.toProject === undefined) {
+    a.toProject = a.toGroup
+    delete a.toGroup
+  }
+  if (name === 'add') {
+    const l = typeof a.list === 'string' ? a.list.trim() : ''
+    a.list = l || currentList
+  }
+  if (name === 'update') {
+    const patch = {}
+    if (a.content !== undefined) patch.content = a.content
+    if (a.priority !== undefined) patch.priority = a.priority
+    if (a.project !== undefined) patch.project = a.project
+    delete a.content
+    delete a.priority
+    delete a.project
+    return { ...a, patch }
+  }
+  return a
+}
+
 const OP_NAMES = TOOL_DEFS.map((t) => t.name).join(' / ')
 
 function buildSystem(state, currentList, useProtocol) {
   const items = state.items.filter((it) => it.list === currentList && !it.archivedAt)
+  const groups = [...new Set(items.map((it) => it.project).filter(Boolean))]
   const lines = items
     .filter((it) => it.status !== 'completed' && it.status !== 'cancelled')
     .map((it) => {
       const mark = it.status === 'in_progress' ? '~' : ' '
-      const proj = it.project ? ` [${it.project}]` : ''
-      return `- [${mark}] ${it.id}  (${it.priority})${proj} ${it.content}`
+      const g = it.project ? ` [分组:${it.project}]` : ''
+      return `- [${mark}] ${it.id}  (${it.priority})${g} ${it.content}`
     })
   const lines2 = [
     '你是 Opentodo 的助手,帮用户用自然语言管理他的待办(不是执行任务,而是记录/修改待办)。',
-    `当前项目:「${currentList}」。`,
+    `当前项目(list)=「${currentList}」。`,
+    '术语:「项目」=一个独立的待办清单(字段 list);「分组」(字段 group)=项目内的分类。**不要把项目名当成分组。**',
     '当前项目下未完成的条目(改/删/完成请用这里的 id):',
     items.length ? lines.join('\n') : '(空)',
+    groups.length
+      ? `当前项目已用的分组(能复用就复用):${groups.map((g) => `「${g}」`).join(' ')}`
+      : '当前项目还没有分组。',
     `全部项目:${state.lists.map((l) => `「${l}」`).join(' ') || '(无)'}`,
-    '规则:用户的话多半是要记录的新待办内容;只有明确出现「完成/删除/归档/改」这类动作词才改已有条目;内容不唯一时先问清楚,别乱改。',
+    '规则:用户的话多半是要记录的新待办内容;只有明确出现「完成/删除/归档/改」这类动作词才改已有条目;内容不唯一时先问清楚,别乱改。新增默认加到**当前项目**,不要传 list,除非用户明确说加到别的项目。',
   ]
   if (useProtocol) {
     lines2.push(
-      `需要改动待办时,单独一行输出:\`@@op {"op":"<名字>", ...}\`(这一行不会显示给用户)。可用 op:${OP_NAMES}。add 需要 content;其余按工具参数给 id 等。不要在正文里夹这些行。`,
+      '需要改动待办时,单独一行输出:`@@op {"op":"<名字>", ...}`(这一行不会显示给用户)。' +
+        `可用 op:${OP_NAMES}。参数:add 需要 content、(可选)group=分组;update/toggle 等用 id。**别把项目名当 group。**不要在正文里夹这些行。`,
     )
   } else {
-    lines2.push('需要改动待办时调用提供的工具。')
+    lines2.push('需要改动待办时调用提供的工具。注意 list=项目、group=分组,别混。')
   }
   return lines2.join('\n')
 }
@@ -288,8 +378,9 @@ export async function runChat({ messages, currentList, onEvent, signal }) {
       for (const tc of res.toolCalls) {
         let out
         try {
-          const data = runOp(tc.name, tc.args)
-          applied.push({ op: tc.name, args: tc.args, revision: data.revision })
+          const args = normalizeArgs(tc.name, tc.args, currentList)
+          const data = runOp(tc.name, args)
+          applied.push({ op: tc.name, args, revision: data.revision })
           out = 'ok'
         } catch (e) {
           out = `error: ${e instanceof Error ? e.message : String(e)}`
@@ -307,8 +398,9 @@ export async function runChat({ messages, currentList, onEvent, signal }) {
       for (const c of cmds) {
         const { op, ...args } = c
         try {
-          const data = runOp(op, args)
-          applied.push({ op, args, revision: data.revision })
+          const norm = normalizeArgs(op, args, currentList)
+          const data = runOp(op, norm)
+          applied.push({ op, args: norm, revision: data.revision })
         } catch (e) {
           text += `\n(操作失败:${e instanceof Error ? e.message : String(e)})`
         }
