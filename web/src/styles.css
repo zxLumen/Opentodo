@@ -1,0 +1,461 @@
+/* Opentodo Web —— 视觉照搬桌面 App(UI.swift):
+   .regularMaterial 背景 → 半透明 + backdrop blur;圆角 12 + 白 0.12 描边;
+   accent #4F8DFD;优先级 high 红 / medium 橙 / low 灰;左项目栏 150px;四段 tab。 */
+
+:root {
+  --accent: #4f8dfd;
+  --accent-2: #2f6be0;
+  --bg-panel: rgba(30, 33, 41, 0.82);
+  --bg-side: rgba(20, 23, 29, 0.5);
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(79, 141, 253, 0.22);
+  --bg-input: rgba(0, 0, 0, 0.22);
+  --fg: #e7e9ee;
+  --fg-dim: #99a1ac;
+  --fg-faint: #6c7480;
+  --line: rgba(255, 255, 255, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.18);
+  --p-high: #ff453a;
+  --p-med: #ff9f0a;
+  --p-low: #8a8f98;
+  --radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
+    system-ui, sans-serif;
+  font-size: 13px;
+  color: var(--fg);
+  /* 独立跑时给个底色;被 iframe 嵌时无所谓 */
+  background: #0f1218;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* ---------- 面板外壳 ---------- */
+
+.panel {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 420px; /* PanelMetrics.minHeight */
+  background: var(--bg-panel);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* ---------- 左:项目栏 ---------- */
+
+.sidebar {
+  width: 150px; /* PanelMetrics.sidebarWidth */
+  flex: 0 0 150px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-side);
+  border-right: 1px solid var(--line);
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 6px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.projects {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2px 6px 6px;
+}
+
+.project {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border-radius: 7px;
+  color: var(--fg);
+  text-align: left;
+  line-height: 1.35;
+}
+
+.project:hover {
+  background: var(--bg-hover);
+}
+
+.project.is-active {
+  background: var(--bg-active);
+}
+
+.project .p-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project .p-count {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sidebar-add:hover {
+  background: var(--bg-hover);
+}
+
+/* ---------- 右:主区 ---------- */
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.head .h-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.head .h-sub {
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+
+.head .spacer {
+  flex: 1;
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--fg-dim);
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+/* 四段:待办 / 进行中 / 已完成 / 归档 */
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 10px 12px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--bg-input);
+}
+
+.tab {
+  flex: 1;
+  padding: 5px 0;
+  border-radius: 7px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.tab:hover {
+  color: var(--fg);
+}
+
+.tab.is-active {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.addbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 10px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: var(--bg-input);
+  border: 1px solid transparent;
+}
+
+.addbar:focus-within {
+  border-color: var(--accent);
+}
+
+.addbar input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+}
+
+.addbar input::placeholder {
+  color: var(--fg-faint);
+}
+
+.addbar .plus {
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ---------- 列表 ---------- */
+
+.list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 6px 10px;
+}
+
+.group-label {
+  padding: 10px 8px 4px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.group-label.is-cancelled {
+  color: var(--fg-faint);
+}
+
+.empty {
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 8px;
+  border-radius: 8px;
+  cursor: default;
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+.row[data-dragging] {
+  opacity: 0.4;
+}
+
+/* 拖动时的插入横杠 —— 和 App 一样是"行间一条杠",不是整行高亮 */
+.row[data-drop='before']::before,
+.row[data-drop='after']::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.row[data-drop='before']::before {
+  top: -1px;
+}
+
+.row[data-drop='after']::after {
+  bottom: -1px;
+}
+
+/* 状态圆点(可点:勾选 / 取消勾选) */
+.status {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1.6px solid var(--fg-faint);
+  color: transparent;
+}
+
+.status:hover {
+  border-color: var(--fg-dim);
+}
+
+.status[data-status='in_progress'] {
+  border-color: var(--accent);
+  /* 半填充:用 conic-gradient 画半个 */
+  background: conic-gradient(var(--accent) 0 50%, transparent 50% 100%);
+}
+
+.status[data-status='completed'],
+.status[data-status='cancelled'] {
+  border-color: transparent;
+  background: var(--accent);
+  color: #0f1218;
+}
+
+.status[data-status='cancelled'] {
+  background: var(--fg-faint);
+}
+
+.row .content {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.row[data-status='completed'] .content,
+.row[data-status='cancelled'] .content {
+  color: var(--fg-dim);
+  text-decoration: line-through;
+}
+
+/* 优先级圆点 */
+.prio {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: 50%;
+}
+
+.prio.high {
+  background: var(--p-high);
+}
+.prio.medium {
+  background: var(--p-med);
+}
+.prio.low {
+  background: var(--p-low);
+}
+
+/* 悬停才出现的行内操作 */
+.actions {
+  flex: 0 0 auto;
+  display: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.row:hover .actions {
+  display: flex;
+}
+
+.actions button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--fg-dim);
+}
+
+.actions button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--fg);
+}
+
+/* 就地编辑 */
+.edit {
+  flex: 1;
+  min-width: 0;
+}
+
+.edit textarea {
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  padding: 2px 0;
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  line-height: 1.45;
+  outline: none;
+  white-space: pre-wrap;
+}
+
+/* 拖到项目上(左栏)高亮 */
+.project[data-drop] {
+  outline: 1.5px solid var(--accent);
+  background: var(--bg-active);
+}
+
+/* ---------- 脚注 / 状态 ---------- */
+
+.foot {
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--fg-faint);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.error {
+  color: #ff6b6b;
+}
+
+@media (max-width: 560px) {
+  .sidebar {
+    width: 120px;
+    flex-basis: 120px;
+  }
+}
