@@ -767,3 +767,149 @@ button {
     flex-basis: 120px;
   }
 }
+
+/* ---------- 聊天设置浮层 ---------- */
+
+.chat-input .send.stop {
+  color: #ff6b6b;
+  font-size: 12px;
+}
+
+.settings-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.settings {
+  width: min(440px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 14px 16px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.settings .x {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--fg-dim);
+}
+
+.settings .x:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.settings .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.settings .field > span {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.settings input,
+.settings select {
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+}
+
+.settings input:focus,
+.settings select:focus {
+  border-color: var(--accent);
+}
+
+.settings .row-inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings .row-inline input {
+  flex: 1;
+}
+
+.settings .field.half {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.settings .mini {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.settings .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.settings .check input {
+  width: auto;
+}
+
+.settings-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.settings-foot .msg {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.settings-foot .primary {
+  padding: 6px 14px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #0f1218;
+  font-weight: 600;
+}
+
+.settings-foot .primary:disabled {
+  opacity: 0.6;
+}
+
+.settings-hint {
+  margin-top: 8px;
+  color: var(--fg-faint);
+  font-size: 10px;
+  line-height: 1.6;
+}

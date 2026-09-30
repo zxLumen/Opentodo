@@ -4,6 +4,9 @@ node_modules/
 
 # 本地数据（真相源在 ~/.config/opentodo，不应入库）
 todos.json
+
+# Web 版运行时数据 + 聊天配置/密钥
+web/data/
 todos.json.tmp.*
 todos.json.lock/
 

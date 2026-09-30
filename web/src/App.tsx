@@ -5,6 +5,7 @@ import { applyOp, fetchState } from './api'
 import { CANCELLED_GROUP, INBOX, UNGROUPED, type Priority, type TodoFile, type TodoItem } from './types'
 import { useProjectDrag, useRowDrag } from './useRowDrag'
 import { fastIntent } from './intent'
+import { SettingsPanel, type ChatState } from './Settings'
 import {
   IconChecklist,
   IconPlus,
@@ -63,6 +64,11 @@ export default function App() {
   const [chatHeight, setChatHeight] = useState(160)
   const chatListRef = useRef<HTMLDivElement>(null)
   const splitRef = useRef<{ y0: number; h0: number } | null>(null)
+  /** 聊天设置(provider/模型/fastMode…) */
+  const [chat, setChat] = useState<ChatState | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [chatBusy, setChatBusy] = useState(false)
+  const streamAbort = useRef<AbortController | null>(null)
 
   const alive = useRef(true)
 
@@ -256,25 +262,97 @@ export default function App() {
     chatListRef.current?.scrollTo({ top: chatListRef.current.scrollHeight })
   }, [messages.length])
 
+  const loadChat = useCallback(async () => {
+    try {
+      const res = await fetch('/api/chat/state')
+      if (res.ok) setChat((await res.json()) as ChatState)
+    } catch {
+      /* 忽略;设置面板里会再拉 */
+    }
+  }, [])
+  useEffect(() => {
+    void loadChat()
+  }, [loadChat])
+
+  const setLast = (text: string, role: 'assistant' | 'system' = 'assistant') =>
+    setMessages((m) => {
+      const c = m.slice()
+      c[c.length - 1] = { role, text }
+      return c
+    })
+
+  /** 流式调用后端 /api/chat(token 逐字) */
+  const streamLLM = async (convo: { role: string; content: string }[]) => {
+    setChatBusy(true)
+    const ac = new AbortController()
+    streamAbort.current = ac
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: convo, list }),
+        signal: ac.signal,
+      })
+      if (!res.ok || !res.body) {
+        const t = await res.text().catch(() => '')
+        throw new Error(t.slice(0, 200) || `HTTP ${res.status}`)
+      }
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      let acc = ''
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          const s = line.trim()
+          if (!s.startsWith('data:')) continue
+          let j: { delta?: string; done?: boolean; text?: string; ops?: unknown[]; error?: string }
+          try {
+            j = JSON.parse(s.slice(5).trim())
+          } catch {
+            continue
+          }
+          if (j.delta) {
+            acc += j.delta
+            setLast(acc)
+          } else if (j.done) {
+            setLast(j.text || acc)
+            if (j.ops?.length) void load()
+          } else if (j.error) {
+            setLast(`模型出错:${j.error}`, 'system')
+          }
+        }
+      }
+    } catch (e) {
+      if (!ac.signal.aborted) setLast(`模型出错:${e instanceof Error ? e.message : String(e)}`, 'system')
+    } finally {
+      setChatBusy(false)
+      streamAbort.current = null
+    }
+  }
+
   const sendChat = () => {
     const text = chatInput.trim()
-    if (!text) return
+    if (!text || chatBusy) return
     setChatInput('')
-    setMessages((m) => [...m, { role: 'user', text }])
-    // 快速模式:本地直接处理明确指令,不调模型
-    const r = fastIntent(text, items, list)
-    if (!r) {
-      setMessages((m) => [
-        ...m,
-        {
-          role: 'system',
-          text: '这句需要模型,暂未接入。可以先试「加一条 …」「完成 …」「列出待办」这类明确指令。',
-        },
-      ])
-      return
+    const convo = [...messages, { role: 'user' as const, text }]
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({ role: m.role, content: m.text }))
+    setMessages((m) => [...m, { role: 'user', text }, { role: 'assistant', text: '' }])
+    // 快速模式:明确指令本地处理,不调模型
+    if (chat?.config.fastMode ?? true) {
+      const r = fastIntent(text, items, list)
+      if (r) {
+        for (const o of r.ops) void run(o.op, o.args)
+        setLast(r.reply)
+        return
+      }
     }
-    for (const o of r.ops) void run(o.op, o.args)
-    setMessages((m) => [...m, { role: 'assistant', text: r.reply }])
+    void streamLLM(convo)
   }
 
   const onSplitDown = (e: React.PointerEvent) => {
@@ -292,11 +370,12 @@ export default function App() {
   }
 
   return (
-    <div className="panel">
-      {!collapsed && (
-        <aside className="sidebar">
-          <div className="sidebar-head">
-            <IconFolder /> 项目
+    <>
+      <div className="panel">
+        {!collapsed && (
+          <aside className="sidebar">
+            <div className="sidebar-head">
+              <IconFolder /> 项目
           </div>
           <div className="projects">
             {lists.map((name) => {
@@ -388,6 +467,9 @@ export default function App() {
             {list} <span className="h-sub">· {total} 待办</span>
           </span>
           <span className="spacer" />
+          <button className="icon-btn" title="聊天设置" onClick={() => setSettingsOpen(true)}>
+            ⚙
+          </button>
           <button className="icon-btn" title="刷新" onClick={() => void load()}>
             <IconRefresh />
           </button>
@@ -555,15 +637,26 @@ export default function App() {
                 }
               }}
             />
-            <button
-              className="send"
-              type="button"
-              disabled={!chatInput.trim()}
-              onClick={sendChat}
-              title="发送"
-            >
-              ➤
-            </button>
+            {chatBusy ? (
+              <button
+                className="send stop"
+                type="button"
+                onClick={() => streamAbort.current?.abort()}
+                title="停止"
+              >
+                ■
+              </button>
+            ) : (
+              <button
+                className="send"
+                type="button"
+                disabled={!chatInput.trim()}
+                onClick={sendChat}
+                title="发送"
+              >
+                ➤
+              </button>
+            )}
           </div>
         </div>
 
@@ -572,7 +665,11 @@ export default function App() {
           {error && <span className="error">· {error}</span>}
         </footer>
       </div>
-    </div>
+      </div>
+      {settingsOpen && (
+        <SettingsPanel initial={chat} onClose={() => setSettingsOpen(false)} onChanged={setChat} />
+      )}
+    </>
   )
 }
 

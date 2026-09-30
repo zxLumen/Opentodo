@@ -28,12 +28,19 @@ npm start              # → http://localhost:8787
 
 ```
 web/
-├─ server.js        Node ESM:HTTP 接口 + 发静态
+├─ server.js        Node ESM:HTTP 接口 + SSE + 发静态
+├─ ops.js           op 表(/api/op 与聊天的工具循环共用)
+├─ providers.js     供应商预设(融合博客 providers.ts)
+├─ settings.js      聊天配置/密钥存取 + 拉模型
+├─ chat.js          聊天引擎:流式 + tools 循环 + 指令协议兜底
+├─ scripts/mock-openai.mjs  本地 mock provider(仅开发验证)
 ├─ src/             React 前端(视觉照搬 UI.swift)
-│   ├─ App.tsx        面板:项目栏 / 四段 / 列表 / 分组
-│   ├─ useRowDrag.ts  指针拖拽(重排 + 拖到项目)
-│   ├─ api.ts         /api/state、/api/op
-│   └─ types.ts       schema v2 类型
+│   ├─ App.tsx        面板:项目栏 / 四段 / 列表 / 分组 / 对话
+│   ├─ Settings.tsx   聊天设置浮层
+│   ├─ intent.ts      快速模式(移植 FastIntent.swift)
+│   ├─ useRowDrag.ts  指针拖拽(重排 + 拖到项目 + 项目重排)
+│   ├─ api.ts / types.ts
+│   └─ styles.css
 └─ dist/            vite 构建产物(不入库)
 ```
 
@@ -44,36 +51,69 @@ web/
 | GET | `/api/state` | `{ data: TodoFile }`(items / lists / revision) |
 | POST | `/api/op` | `{ op, ...args }` → `{ data }`,应用一个操作 |
 | GET | `/api/health` | `{ ok, file }` |
+| GET | `/api/chat/state` | 聊天配置(密钥掩码)+ 供应商预设 |
+| POST | `/api/chat/config` | 保存 provider / baseUrl / model / 温度 / maxTokens / fastMode |
+| POST | `/api/chat/key` | 保存 API Key |
+| POST | `/api/chat/models` | 拉取该 provider 的模型列表 |
+| POST | `/api/chat` | **SSE 流式对话**(快速模式未命中时) |
 
 `op` 取值(语义对齐 `plugin/opentodo.js`):`add` / `update` / `setStatus` / `toggle` /
 `setArchived` / `remove` / `reorder` / `move`(改分组 + 组内重排)/ `moveToList` / `moveList` /
 `addList` / `renameList` / `deleteList`,以及批量 `archiveCompleted` / `restoreArchived` /
 `purgeArchived`(按 `list` 作用域)。
 
-## 对话 / 快速模式
+## 对话 / 快速模式 / LLM
 
-面板底部有常驻对话(可拖动分隔条调高度,双击复位)。目前接的是**快速模式**——
-明确指令在本地毫秒级处理、**不调模型**(移植自桌面 `FastIntent.swift`,逻辑在
-`src/intent.ts`,`fastIntent(text, items, list) → { reply, ops }`):
+面板底部有常驻对话(可拖动分隔条调高度,双击复位)。分两层:
 
-| 说什么 | 效果 |
+1. **快速模式(本地、不调模型)**:明确指令毫秒级处理(移植自桌面 `FastIntent.swift`,
+   逻辑在 `src/intent.ts`)。命中就直接改、直接回:
+
+   | 说什么 | 效果 |
+   |---|---|
+   | `加一条 写周报` | 新增到当前项目 |
+   | `完成 周报` / `勾选 …` | 命中唯一一条就勾选完成 |
+   | `恢复 …` / `重新打开 …` | 取消完成 / 从归档恢复 |
+   | `归档 …` | 已完成项移入归档 |
+   | `删除 …` | 彻底删除 |
+   | `列出待办` / `看下待办` | 列出未完成 |
+   | `清空已完成` / `清空归档` | 批量归档 / 清空 |
+
+   含糊或内容不唯一时**不猜**,转给 LLM。
+
+2. **LLM 回落**:未命中就流式调模型(`/api/chat`)。让模型改待办用两条路 ——
+   **原生 tools(function calling)优先**;provider 不支持(400/422)时自动回落
+   **指令协议**(system 约定输出 `@@op {...}` 行,服务端解析执行)。模型回复逐字流式显示。
+
+设置(面板头部 **⚙**):选供应商 → baseUrl 自动带出(**「拉取模型」**按 `/models` 拉下拉)
+→ 选/填模型 → API Key → 温度 / maxTokens → 快速模式开关。
+
+## 供应商配置
+
+`providers.js` 融合了两处现成清单(博客 `providers.ts` 的 id/baseUrl + 桌面 App 的
+`provider/model` 概念)。直连 OpenAI 兼容接口(或本地 Ollama):
+
+| id | 名称 |
 |---|---|
-| `加一条 写周报` | 新增到当前项目 |
-| `完成 周报` / `勾选 …` | 命中唯一一条就勾选完成 |
-| `恢复 …` / `重新打开 …` | 取消完成 / 从归档恢复 |
-| `归档 …` | 已完成项移入归档 |
-| `删除 …` | 彻底删除 |
-| `列出待办` / `看下待办` | 列出未完成 |
-| `清空已完成` / `清空归档` | 批量归档 / 清空 |
+| `deepseek` | DeepSeek |
+| `zhipuai` | 智谱 GLM |
+| `openai` | OpenAI |
+| `dashscope` | 通义千问(百炼) |
+| `moonshot` | Moonshot / Kimi |
+| `siliconflow` | 硅基流动 |
+| `openrouter` | OpenRouter |
+| `opencode-z` | OpenCode Go(带专属请求头) |
+| `ollama` | 本地 Ollama |
+| `custom` | 自定义(OpenAI 兼容) |
 
-含糊、或内容不唯一时**不猜**——回一条系统提示,留给将来的 LLM 回落。
+- 配置存 `web/data/settings.json`;密钥存 `web/data/chat.key`(chmod 600),env
+  `OPENTODO_CHAT_KEY` 优先。
+- 本地验证:`node scripts/mock-openai.mjs`(8901)→ 设置里 provider 选 `custom`、
+  baseUrl `http://localhost:8901/v1`、模型 `mock-model`。
 
 ## 待办(TODO)
 
 - **访客隔离**:目前单用户、无鉴权。对外部署前必须加访问控制(反向代理 basic_auth 或
   按访客分库)。
-- **LLM 回落**:快速模式未命中时,桌面版会转给 `opencode serve`(带 `opentodo_*` 工具)。
-  网页版暂未接 —— 待定后端:服务器跑 opencode serve / 复用博客模型 / 直连 OpenAI 兼容 API。
-- **分组(project)**:已支持新增时选分组、行内「移动到分组」、拖到别的分组即改分组。
 - **面板交互细节**:置顶、四边缩放(桌面版有;网页版是浏览器浮层,暂未做)。
 - 需要 `zone` 提醒 / 子任务等桌面版还没有的功能时再提。
