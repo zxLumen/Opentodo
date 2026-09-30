@@ -117,6 +117,32 @@ export const ops = {
     })
   },
 
+  // 整理(对齐桌面/插件的 opentodo_clear):
+  //   scope='completed'(默认,安全):把该范围内已完成的移入归档,内容不丢;
+  //   scope='archived':清空该范围的归档(不可恢复);
+  //   scope='all':删除该范围内**未归档**的条目(归档保留)。
+  //   list 省略/null → 作用于全部项目;否则只动该项目。
+  clear(d, { scope = 'completed', list } = {}) {
+    const now = nowIso()
+    const target = list === undefined || list === null || list === '' ? undefined : normList(list)
+    const inScope = (it) => target === undefined || it.list === target
+    if (scope === 'completed') {
+      for (const it of d.items) {
+        if (it.status === 'completed' && !it.archivedAt && inScope(it)) {
+          it.archivedAt = now
+          it.updatedAt = now
+        }
+      }
+      return
+    }
+    if (scope === 'archived') {
+      d.items = d.items.filter((it) => !(it.archivedAt && inScope(it)))
+      return
+    }
+    // 'all':范围内只保留归档
+    d.items = d.items.filter((it) => (inScope(it) ? !!it.archivedAt : true))
+  },
+
   // 彻底删除
   remove(d, { id }) {
     const idx = d.items.findIndex((it) => it.id === id)

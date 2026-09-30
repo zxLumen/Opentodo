@@ -32,7 +32,7 @@ const TOOL_DEFS = [
     params: {
       content: { type: 'string', description: '待办内容' },
       list: { type: 'string', description: '项目(todolist)名。省略=当前项目;只有用户明确说到别的项目时才传' },
-      group: { type: 'string', description: '项目内的分组/分类名。可省略' },
+      group: { type: 'string', description: '简短的分组/分类名;尽量给一个(优先复用当前项目已有的分组),别留空' },
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: '优先级,默认 medium' },
       status: { type: 'string', enum: ['pending', 'in_progress'], description: '默认 pending' },
     },
@@ -99,6 +99,21 @@ const TOOL_DEFS = [
     params: { name: { type: 'string', description: '要删除的项目名' } },
     required: ['name'],
   },
+  {
+    name: 'clear',
+    desc: '整理待办:scope=completed(默认,把已完成的移入归档,安全)/ archived(清空归档,不可恢复)/ all(删除未归档的,只留归档)',
+    params: {
+      scope: { type: 'string', enum: ['completed', 'archived', 'all'], description: '默认 completed' },
+      list: { type: 'string', description: '限定某个项目;省略 = 全部项目' },
+    },
+    required: [],
+  },
+  {
+    name: 'listItems',
+    desc: '读取待办清单(想了解当前项目之外、或全部项目时才用;当前项目的条目已直接给出,不用为看一眼而调)',
+    params: { list: { type: 'string', description: '项目名;不传 = 当前项目,传 "*" = 全部项目' } },
+    required: [],
+  },
 ]
 
 function openAiTools() {
@@ -147,6 +162,19 @@ function normalizeArgs(name, raw, currentList) {
 
 const OP_NAMES = TOOL_DEFS.map((t) => t.name).join(' / ')
 
+/** 把一组条目格式化成一行一条(给 listItems 工具的结果) */
+function formatItems(state, scope) {
+  const items = state.items.filter((it) => !it.archivedAt && (scope === undefined || it.list === scope))
+  if (!items.length) return scope ? `「${scope}」里没有未归档的条目。` : '没有任何未归档的条目。'
+  return items
+    .map((it) => {
+      const mark = it.status === 'in_progress' ? '~' : it.status === 'completed' ? 'x' : it.status === 'cancelled' ? '-' : ' '
+      const g = it.project ? ` [分组:${it.project}]` : ' [未分组]'
+      return `- [${mark}] ${it.id}  (${it.priority}) @${it.list}${g} ${it.content}`
+    })
+    .join('\n')
+}
+
 function buildSystem(state, currentList, useProtocol) {
   const items = state.items.filter((it) => it.list === currentList && !it.archivedAt)
   const groups = [...new Set(items.map((it) => it.project).filter(Boolean))]
@@ -157,20 +185,19 @@ function buildSystem(state, currentList, useProtocol) {
       const g = it.project ? ` [分组:${it.project}]` : ''
       return `- [${mark}] ${it.id}  (${it.priority})${g} ${it.content}`
     })
+  // 以下规则**逐条对齐桌面插件的 render()**(plugin/opentodo.js),只把工具名换成 web 的、措辞译中。
   const lines2 = [
-    '你是 Opentodo 的助手,帮用户用自然语言管理他的待办(不是执行任务,而是记录/修改待办)。',
-    `当前项目(list)=「${currentList}」。`,
-    '术语:「项目」=一个独立的待办清单(字段 list);「分组」(字段 group)=项目内的分类。**别把项目名当成分组** —— 不要把「当前项目」的名字填进 group。',
-    '用户的话多半是要**记录的新待办内容**;一条消息里有多项(编号/多行/分号)就拆成多条、去掉编号。只有明确出现「完成/删除/归档/改/列出/清空」这类动作词,才去改已有条目 —— 否则一律新增。',
-    // 与桌面 render() 对齐:中性措辞「强相关就换项目」,不要求用户「明确提到项目」;
-    // 也**不列全部项目** —— 列了会让模型把新领域退而求其次当成分组。
-    '新增默认加到**当前项目**;只有内容与另一个项目**强相关**时才换项目:那个项目不存在,就先 addList 建它,再用 list 指过去(把条目移到新 list 也会自动注册项目)。',
-    '每条新待办尽量给一个**简短分组**(优先复用下面的已有分组);语义上确实没有合适的,才留「未分组」。',
-    groups.length
-      ? `当前项目已用的分组(优先复用):${groups.map((g) => `「${g}」`).join(' ')}`
-      : '当前项目还没有分组。',
-    '新建项目用 addList;项目改名用 renameList;删除项目用 deleteList(会**连带删掉**其下所有待办、不可恢复;仅当用户明确要求删某个项目时才用)。',
-    '当前项目与它的条目已经列在下面了,**不用**为了「看一眼」再调 list 工具。',
+    '你是 Opentodo 的助手,帮用户用自然语言管理他的待办(是**记录/修改**待办,不是去执行任务)。',
+    `当前项目(list)=「${currentList}」。用工具时 list 默认填当前项目,除非用户明确提到另一个项目、或要「全部/所有」。`,
+    '术语:「项目」=独立的待办清单(字段 list);「分组」(字段 group)=项目内的分类。**别把项目名当分组。**',
+    '用户的消息通常是要**记录的新待办内容**,而不是让你执行的指令 —— 你只管记成待办。一条消息里有多项(编号/多行/分号)就**拆成多条**,去掉编号与项目符号。',
+    '只有用户明确用了动作词(完成/删除/归档/恢复/改/清空/列出)时才改动**已有**条目;否则一律 `add`。没被要求就不要改已有条目。',
+    '新增默认加到**当前项目**;只有内容与另一个项目**强相关**时才换项目(那个项目不存在就先 addList 建,再用 list 指过去;把条目移到新 list 会自动注册项目)。',
+    '**每条新待办都要给一个简短的分组(group)**(优先复用当前项目已有的分组)—— **别让它落进「未分组」**。',
+    groups.length ? `当前项目已有的分组(优先复用):${groups.map((g) => `「${g}」`).join(' ')}` : '当前项目还没有分组。',
+    '新建项目用 addList;改名用 renameList;删项目用 deleteList(连带其下待办、不可恢复,仅明确要求时用)。',
+    '整理已完成 / 归档用 clear(默认 scope=completed 只是**移入归档**,不会丢东西)。',
+    '当前项目和它的条目已经列在下面了 —— **别**为了「看一眼」再调 listItems。',
     '当前项目下未完成的条目(改/删/完成请用这里的 id):',
     items.length ? lines.join('\n') : '(空)',
   ]
@@ -403,10 +430,17 @@ export async function runChat({ messages, currentList, onEvent, signal }) {
       for (const tc of res.toolCalls) {
         let out
         try {
-          const args = normalizeArgs(tc.name, tc.args, currentList)
-          const data = runOp(tc.name, args)
-          applied.push({ op: tc.name, args, revision: data.revision })
-          out = 'ok'
+          if (tc.name === 'listItems') {
+            // 只读:不算 op,直接把清单文本回灌给模型
+            const l = typeof tc.args.list === 'string' ? tc.args.list.trim() : ''
+            const scope = !l || l === currentList ? currentList : l === '*' || l === '全部' ? undefined : l
+            out = formatItems(read(), scope)
+          } else {
+            const args = normalizeArgs(tc.name, tc.args, currentList)
+            const data = runOp(tc.name, args)
+            applied.push({ op: tc.name, args, revision: data.revision })
+            out = 'ok'
+          }
         } catch (e) {
           out = `error: ${e instanceof Error ? e.message : String(e)}`
         }
