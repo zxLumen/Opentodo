@@ -1,0 +1,19 @@
+# 只给 docker build 用的构建上下文过滤(构建上下文 = 仓库根)。
+# 排除:git、Swift 构建产物、node_modules、运行时数据等体积大且用不到的东西。
+.git
+.gitignore
+app/.build
+.build
+dist
+node_modules
+**/node_modules
+web/dist
+web/data
+web/.env
+release-assets
+*.gif
+*.mov
+*.mp4
+*.zip
+*.dmg
+docs/

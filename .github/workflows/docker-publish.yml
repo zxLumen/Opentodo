@@ -1,0 +1,36 @@
+name: docker
+
+# 构建 Opentodo Web 运行镜像 → ghcr.io/zxlumen/opentodo-web
+# 服务器只 pull、不构建(与 zxLumen-Blog 的 app 镜像同样的模式)。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'mcp/lib/**'
+      - '.github/workflows/docker-publish.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/zxlumen/opentodo-web:latest
+            ghcr.io/zxlumen/opentodo-web:${{ github.sha }}
