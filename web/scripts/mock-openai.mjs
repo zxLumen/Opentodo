@@ -18,6 +18,21 @@ const chunk = (content) => ({ choices: [{ index: 0, delta: { content } }] })
 const call = (id, name, args) => ({
   choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }],
 })
+const calls = (arr) => ({
+  choices: [
+    {
+      index: 0,
+      delta: {
+        tool_calls: arr.map((c, i) => ({
+          index: i,
+          id: c.id,
+          type: 'function',
+          function: { name: c.name, arguments: JSON.stringify(c.args) },
+        })),
+      },
+    },
+  ],
+})
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`)
@@ -47,8 +62,33 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' })
 
     if (last.role === 'tool') {
-      sse(res, chunk('已加好。'))
+      sse(res, chunk('好了。'))
       sse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+      res.write('data: [DONE]\n\n')
+      return res.end()
+    }
+
+    if (hasTools && text.includes('NEWPROJ')) {
+      // 建项目 + 把待办加进新项目(同一轮两个 tool_call,顺序执行)
+      sse(res, calls([
+        { id: 'c1', name: 'addList', args: { name: '旅行' } },
+        { id: 'c2', name: 'add', args: { content: '旅行用品', list: '旅行', group: '清单' } },
+      ]))
+      sse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+      res.write('data: [DONE]\n\n')
+      return res.end()
+    }
+
+    if (hasTools && text.includes('RENAME')) {
+      sse(res, call('c_rn', 'renameList', { oldName: '旅行', newName: '旅行2' }))
+      sse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+      res.write('data: [DONE]\n\n')
+      return res.end()
+    }
+
+    if (hasTools && text.includes('DELPROJ')) {
+      sse(res, call('c_del', 'deleteList', { name: '旅行2' }))
+      sse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
       res.write('data: [DONE]\n\n')
       return res.end()
     }

@@ -78,7 +78,27 @@ const TOOL_DEFS = [
     params: { id: { type: 'string' }, list: { type: 'string', description: '目标项目名' } },
     required: ['id', 'list'],
   },
-  { name: 'addList', desc: '新建一个项目', params: { name: { type: 'string' } }, required: ['name'] },
+  {
+    name: 'addList',
+    desc: '新建一个项目(独立的待办清单)。内容与一个尚不存在的项目强相关时,先建它,再用 list 把待办加进去',
+    params: { name: { type: 'string', description: '项目名' } },
+    required: ['name'],
+  },
+  {
+    name: 'renameList',
+    desc: '给项目改名(其下待办跟着走)。仅当用户明确要求给某个项目改名时用',
+    params: {
+      oldName: { type: 'string', description: '当前项目名' },
+      newName: { type: 'string', description: '新项目名' },
+    },
+    required: ['oldName', 'newName'],
+  },
+  {
+    name: 'deleteList',
+    desc: '删除一个项目,连带其下所有待办(含归档),不可恢复。仅当用户明确要求删除某个项目时用',
+    params: { name: { type: 'string', description: '要删除的项目名' } },
+    required: ['name'],
+  },
 ]
 
 function openAiTools() {
@@ -140,19 +160,23 @@ function buildSystem(state, currentList, useProtocol) {
   const lines2 = [
     '你是 Opentodo 的助手,帮用户用自然语言管理他的待办(不是执行任务,而是记录/修改待办)。',
     `当前项目(list)=「${currentList}」。`,
-    '术语:「项目」=一个独立的待办清单(字段 list);「分组」(字段 group)=项目内的分类。**不要把项目名当成分组。**',
-    '当前项目下未完成的条目(改/删/完成请用这里的 id):',
-    items.length ? lines.join('\n') : '(空)',
+    '术语:「项目」=一个独立的待办清单(字段 list);「分组」(字段 group)=项目内的分类。**别把项目名当成分组** —— 不要把「当前项目」的名字填进 group。',
+    '用户的话多半是要**记录的新待办内容**;一条消息里有多项(编号/多行/分号)就拆成多条、去掉编号。只有明确出现「完成/删除/归档/改/列出/清空」这类动作词,才去改已有条目 —— 否则一律新增。',
+    '新增**默认加到当前项目**;只有「用户明确提到另一个项目」或「内容与另一个项目强相关」时才换项目(那个项目不存在就先用 addList 建,再用 list 指过去)。',
+    '每条新待办尽量给一个**简短分组**(优先复用下面的已有分组);语义上确实没有合适的,才留「未分组」。',
     groups.length
-      ? `当前项目已用的分组(能复用就复用):${groups.map((g) => `「${g}」`).join(' ')}`
+      ? `当前项目已用的分组(优先复用):${groups.map((g) => `「${g}」`).join(' ')}`
       : '当前项目还没有分组。',
     `全部项目:${state.lists.map((l) => `「${l}」`).join(' ') || '(无)'}`,
-    '规则:用户的话多半是要记录的新待办内容;只有明确出现「完成/删除/归档/改」这类动作词才改已有条目;内容不唯一时先问清楚,别乱改。新增默认加到**当前项目**,不要传 list,除非用户明确说加到别的项目。',
+    '新建项目用 addList;项目改名用 renameList;删除项目用 deleteList(会**连带删掉**其下所有待办、不可恢复;仅当用户明确要求删某个项目时才用)。',
+    '当前项目与它的条目已经列在下面了,**不用**为了「看一眼」再调 list 工具。',
+    '当前项目下未完成的条目(改/删/完成请用这里的 id):',
+    items.length ? lines.join('\n') : '(空)',
   ]
   if (useProtocol) {
     lines2.push(
       '需要改动待办时,单独一行输出:`@@op {"op":"<名字>", ...}`(这一行不会显示给用户)。' +
-        `可用 op:${OP_NAMES}。参数:add 需要 content、(可选)group=分组;update/toggle 等用 id。**别把项目名当 group。**不要在正文里夹这些行。`,
+        `可用 op:${OP_NAMES}。参数:add 需要 content、(可选)group=分组;renameList 要 oldName/newName;deleteList 要 name;update/toggle 等用 id。**别把项目名当 group。**不要在正文里夹这些行。`,
     )
   } else {
     lines2.push('需要改动待办时调用提供的工具。注意 list=项目、group=分组,别混。')
