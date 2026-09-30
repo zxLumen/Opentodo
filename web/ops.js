@@ -247,10 +247,10 @@ export const ops = {
   },
 }
 
-/** 在锁里执行一个 op,返回新 data */
-export function runOp(name, args = {}) {
+/** 在锁里执行一个 op,返回新 data。`file` 由调用方按访客/站长决定。 */
+export function runOp(name, args = {}, file) {
   const fn = ops[name]
   if (!fn) throw new Error(`未知 op:${name}`)
-  const { data } = update((d) => fn(d, args))
+  const { data } = update((d) => fn(d, args), file)
   return data
 }

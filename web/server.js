@@ -4,23 +4,24 @@
 // 同一条原子 rename,所以 Web 版和桌面 App / opencode 插件 / MCP 读写的是完全一样的
 // 东西,天然共存。ops 表在 ops.js(HTTP 与聊天的工具循环共用)。
 //
-// 接口:
-//   GET  /api/state              → { data: TodoFile }
-//   POST /api/op   { op, ... }   → { data }
-//   GET  /api/health             → ok
-//   GET  /api/chat/state         → { config(掩码), providers }
-//   POST /api/chat/config        → 保存 provider/baseUrl/model/温度/fastMode
-//   POST /api/chat/key           → 保存 API Key(掩码返回)
-//   POST /api/chat/models        → 拉取该 provider 的模型列表
-//   POST /api/chat               → SSE 流式对话(未命中快速模式时)
-// 生产环境顺带把 vite 构建出的 dist/ 当静态站点发。
+// 访客隔离(B 方案):
+//   - 每个访客一个随机 cid(写 cookie `zx_todo_cid`),数据落在 data/visitors/<cid>.json;
+//     彼此、以及和站长的数据**完全隔离**。
+//   - 站长:访问 `/?owner=<token>`(token 存 data/owner.token,启动时会打印)拿一个 owner cookie;
+//     之后读写的是 OPENTODO_FILE(那份额可指向桌面 App 的 todos.json,天然同步)。
+//   - 聊天配置 / 密钥、以及 LLM 对话**仅站长可用**(访客 403;访客仍可用本地快速模式与手动 UI)。
 //
-// 数据文件:默认 web/data/todos.json;设 OPENTODO_FILE 指向别处(如桌面 App 那份)。
-// 聊天配置/密钥:web/data/settings.json 与 web/data/chat.key(env OPENTODO_CHAT_KEY 优先)。
+// 接口:
+//   GET  /api/state              → { data, owner }
+//   POST /api/op   { op, ... }   → { data }
+//   GET  /api/chat/state         → { config(掩码), providers, owner }
+//   POST /api/chat/config|key|models → 仅站长
+//   POST /api/chat               → SSE 流式对话(仅站长)
 
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { read } from '../mcp/lib/store.js'
 import { ops, runOp } from './ops.js'
@@ -30,9 +31,58 @@ import { runChat } from './chat.js'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT || 8787)
 const DIST = path.join(HERE, 'dist')
+const DATA_DIR = path.join(HERE, 'data')
+const VISITORS_DIR = path.join(DATA_DIR, 'visitors')
+const OWNER_TOKEN_FILE = path.join(DATA_DIR, 'owner.token')
 
-// 必须在任何 read/update 之前设好(store.js 的 resolveFile 是调用时才读 env 的)
-process.env.OPENTODO_FILE ||= path.join(HERE, 'data', 'todos.json')
+// 站长那份额:默认 web/data/todos.json;设 OPENTODO_FILE 指向桌面 App 那份即可两边同源。
+const OWNER_FILE = process.env.OPENTODO_FILE || path.join(DATA_DIR, 'todos.json')
+// 兜底:即便某处漏传 file,store.js 的 resolveFile() 也只会命中站长那份,**绝不会**误写到
+// 桌面 App 的数据文件以外的第三方路径。
+process.env.OPENTODO_FILE = OWNER_FILE
+const VISITOR_AI = process.env.OPENTODO_VISITOR_AI === '1'
+
+function ownerToken() {
+  if (process.env.OPENTODO_OWNER_TOKEN) return process.env.OPENTODO_OWNER_TOKEN
+  try {
+    const t = fs.readFileSync(OWNER_TOKEN_FILE, 'utf8').trim()
+    if (t) return t
+  } catch {
+    /* 还没有,生成 */
+  }
+  const t = crypto.randomBytes(16).toString('hex')
+  fs.mkdirSync(DATA_DIR, { recursive: true })
+  fs.writeFileSync(OWNER_TOKEN_FILE, t + '\n', { mode: 0o600 })
+  return t
+}
+
+function parseCookies(req) {
+  const out = {}
+  const h = req.headers.cookie
+  if (!h) return out
+  for (const part of h.split(';')) {
+    const i = part.indexOf('=')
+    if (i < 0) continue
+    const k = part.slice(0, i).trim()
+    if (k) out[k] = decodeURIComponent(part.slice(i + 1).trim())
+  }
+  return out
+}
+
+/** 按 cookie 判定「站长 / 访客」,并给出该请求对应的数据文件 */
+function resolveScope(req) {
+  const c = parseCookies(req)
+  const setCookies = []
+  const token = ownerToken()
+  const owner = !!token && c.zx_todo_owner === token
+  let cid = c.zx_todo_cid
+  if (!/^[a-f0-9]{16}$/.test(cid || '')) {
+    cid = crypto.randomBytes(8).toString('hex')
+    setCookies.push(`zx_todo_cid=${cid}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly`)
+  }
+  const file = owner ? OWNER_FILE : path.join(VISITORS_DIR, `${cid}.json`)
+  return { owner, cid, file, setCookies }
+}
 
 function send(res, status, body, headers = {}) {
   const payload = typeof body === 'string' ? body : JSON.stringify(body)
@@ -76,8 +126,8 @@ function serveStatic(res, pathname) {
   fs.createReadStream(file).pipe(res)
 }
 
-/** SSE 流式对话 */
-async function handleChat(req, res) {
+/** SSE 流式对话(仅站长) */
+async function handleChat(req, res, scope) {
   const body = await readBody(req)
   const messages = Array.isArray(body.messages)
     ? body.messages
@@ -107,6 +157,7 @@ async function handleChat(req, res) {
     const { text, ops: applied } = await runChat({
       messages,
       currentList,
+      file: scope.file,
       onEvent: (e) => sendEvent(e),
       signal: ac.signal,
     })
@@ -125,43 +176,66 @@ const server = http.createServer(async (req, res) => {
   const { pathname } = url
 
   try {
-    if (pathname === '/api/health') return send(res, 200, { ok: true, file: process.env.OPENTODO_FILE })
+    // `/?owner=<token>`:认领站长身份(种 owner cookie 后跳回)
+    const ownerParam = url.searchParams.get('owner')
+    if (ownerParam !== null) {
+      if (ownerParam === ownerToken()) {
+        res.setHeader(
+          'Set-Cookie',
+          `zx_todo_owner=${ownerParam}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly`,
+        )
+        url.searchParams.delete('owner')
+        res.writeHead(302, { Location: url.pathname + url.search })
+        return res.end()
+      }
+      return send(res, 403, 'owner token 不对')
+    }
+
+    const scope = resolveScope(req)
+    if (scope.setCookies.length) res.setHeader('Set-Cookie', scope.setCookies)
+
+    if (pathname === '/api/health') return send(res, 200, { ok: true, owner: scope.owner })
 
     if (pathname === '/api/state' && req.method === 'GET') {
-      return send(res, 200, { data: read() })
+      return send(res, 200, { data: read(scope.file), owner: scope.owner })
     }
 
     if (pathname === '/api/op' && req.method === 'POST') {
       const body = await readBody(req)
       const op = String(body.op ?? '')
       if (!ops[op]) return send(res, 400, { error: `未知 op:${op}` })
-      const data = runOp(op, body)
+      const data = runOp(op, body, scope.file)
       return send(res, 200, { data })
     }
 
-    /* ---------- 聊天设置 ---------- */
+    /* ---------- 聊天设置(仅站长) ---------- */
+    const ownerOnly = () => send(res, 403, { error: '仅站长可用' })
     if (pathname === '/api/chat/state' && req.method === 'GET') {
-      return send(res, 200, chatState())
+      return send(res, 200, chatState(scope.owner))
     }
     if (pathname === '/api/chat/config' && req.method === 'POST') {
+      if (!scope.owner) return ownerOnly()
       const body = await readBody(req)
       saveSettings(body)
-      return send(res, 200, chatState())
+      return send(res, 200, chatState(true))
     }
     if (pathname === '/api/chat/key' && req.method === 'POST') {
+      if (!scope.owner) return ownerOnly()
       const body = await readBody(req)
       if (typeof body.key === 'string') setApiKey(body.key)
-      return send(res, 200, chatState())
+      return send(res, 200, chatState(true))
     }
     if (pathname === '/api/chat/models' && req.method === 'POST') {
+      if (!scope.owner) return ownerOnly()
       const body = await readBody(req)
       const r = await listModels({ provider: body.provider, baseUrl: body.baseUrl })
       return send(res, 200, r)
     }
 
-    /* ---------- 对话(SSE) ---------- */
+    /* ---------- 对话(SSE;仅站长,除非 OPENTODO_VISITOR_AI=1) ---------- */
     if (pathname === '/api/chat' && req.method === 'POST') {
-      return handleChat(req, res)
+      if (!scope.owner && !VISITOR_AI) return ownerOnly()
+      return handleChat(req, res, scope)
     }
 
     if (pathname.startsWith('/api/')) return send(res, 404, { error: 'not found' })
@@ -174,5 +248,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`opentodo-web  →  http://localhost:${PORT}`)
-  console.log(`data file     →  ${process.env.OPENTODO_FILE}`)
+  console.log(`owner file    →  ${OWNER_FILE}`)
+  console.log(`visitor data  →  ${VISITORS_DIR}/<cid>.json`)
+  console.log(`站长入口      →  http://localhost:${PORT}/?owner=${ownerToken()}`)
 })

@@ -20,6 +20,7 @@ export interface ProviderPreset {
   baseUrl: string
 }
 export interface ChatState {
+  owner: boolean
   config: ChatConfig
   providers: ProviderPreset[]
 }

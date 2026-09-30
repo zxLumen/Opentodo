@@ -352,6 +352,14 @@ export default function App() {
         return
       }
     }
+    // 访客:不让用站长的模型(AI 回落仅站长)
+    if (!chat?.owner) {
+      setLast(
+        'AI 对话仅站长可用 —— 不过你仍可手动增删待办,或用「加一条 …」「完成 …」「列出待办」这类明确指令。',
+        'system',
+      )
+      return
+    }
     void streamLLM(convo)
   }
 
@@ -467,9 +475,11 @@ export default function App() {
             {list} <span className="h-sub">· {total} 待办</span>
           </span>
           <span className="spacer" />
-          <button className="icon-btn" title="聊天设置" onClick={() => setSettingsOpen(true)}>
-            ⚙
-          </button>
+          {chat?.owner && (
+            <button className="icon-btn" title="聊天设置" onClick={() => setSettingsOpen(true)}>
+              ⚙
+            </button>
+          )}
           <button className="icon-btn" title="刷新" onClick={() => void load()}>
             <IconRefresh />
           </button>

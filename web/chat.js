@@ -369,7 +369,7 @@ function parseCommands(text) {
  * 跑一轮对话。messages: [{role, content}](不含 system);onEvent 收 SSE 事件。
  * 返回 { text, ops }。
  */
-export async function runChat({ messages, currentList, onEvent, signal }) {
+export async function runChat({ messages, currentList, onEvent, signal, file }) {
   const settings = getSettings()
   const key = getApiKey()
   const proto = protocolOf(settings.provider)
@@ -379,7 +379,7 @@ export async function runChat({ messages, currentList, onEvent, signal }) {
   const isLocal = /localhost|127\.0\.0\.1/.test(base) || settings.provider === 'ollama'
   if (!key && !isLocal) throw new Error('未配置 API Key(去设置里填)')
 
-  const state = read()
+  const state = read(file)
   let useTools = proto === 'openai'
   let useProtocol = !useTools
   const convo = [{ role: 'system', content: buildSystem(state, currentList, useProtocol) }, ...messages]
@@ -418,7 +418,7 @@ export async function runChat({ messages, currentList, onEvent, signal }) {
       if (useTools && (e.status === 400 || e.status === 422)) {
         useTools = false
         useProtocol = true
-        convo[0] = { role: 'system', content: buildSystem(read(), currentList, true) }
+        convo[0] = { role: 'system', content: buildSystem(read(file), currentList, true) }
         res = await callOnce()
       } else {
         throw e
@@ -434,10 +434,10 @@ export async function runChat({ messages, currentList, onEvent, signal }) {
             // 只读:不算 op,直接把清单文本回灌给模型
             const l = typeof tc.args.list === 'string' ? tc.args.list.trim() : ''
             const scope = !l || l === currentList ? currentList : l === '*' || l === '全部' ? undefined : l
-            out = formatItems(read(), scope)
+            out = formatItems(read(file), scope)
           } else {
             const args = normalizeArgs(tc.name, tc.args, currentList)
-            const data = runOp(tc.name, args)
+            const data = runOp(tc.name, args, file)
             applied.push({ op: tc.name, args, revision: data.revision })
             out = 'ok'
           }
@@ -458,7 +458,7 @@ export async function runChat({ messages, currentList, onEvent, signal }) {
         const { op, ...args } = c
         try {
           const norm = normalizeArgs(op, args, currentList)
-          const data = runOp(op, norm)
+          const data = runOp(op, norm, file)
           applied.push({ op, args: norm, revision: data.revision })
         } catch (e) {
           text += `\n(操作失败:${e instanceof Error ? e.message : String(e)})`

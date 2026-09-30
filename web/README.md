@@ -20,9 +20,22 @@ npm start              # → http://localhost:8787
 
 ## 数据文件
 
-- 默认:`web/data/todos.json`(已在 `.gitignore`,不入库)。
-- 想和本机桌面 App 共用同一份:`OPENTODO_FILE=~/.config/opentodo/todos.json npm start`。
+- **站长**(`OPENTODO_FILE`,默认 `web/data/todos.json`):想和本机桌面 App 共用同一份,设
+  `OPENTODO_FILE=~/.config/opentodo/todos.json`。
+- **访客**:每人一个随机 `cid`(cookie `zx_todo_cid`),数据在 `web/data/visitors/<cid>.json`。
 - 和 App / 插件 / MCP 完全兼容:同一把 mkdir 文件锁、同一条原子 rename、同一个 `revision`。
+
+## 访客隔离(B 方案)
+
+- **每个访客一份独立数据**:服务端给每个访客发 `zx_todo_cid` cookie,数据落
+  `data/visitors/<cid>.json` —— 访客之间、以及和站长的数据**完全隔离**。
+- **站长**:访问 `/?owner=<token>` 认领身份(token 存 `data/owner.token`,启动时会打印
+  「站长入口」;`OPENTODO_OWNER_TOKEN` 可覆盖)。认领后读写的是 `OPENTODO_FILE` 那份额。
+- **AI 仅站长**:聊天配置 / 密钥、以及 LLM 对话都只对站长开放(访客 403);访客仍可用
+  **本地快速模式**(`加一条 …` 等)和完整的手动 UI。想让访客也能用 AI:
+  `OPENTODO_VISITOR_AI=1`(会走站长的模型额度,谨慎)。
+- 环境变量:`OPENTODO_FILE`(站长数据文件)/ `OPENTODO_OWNER_TOKEN`(站长口令)/
+  `OPENTODO_VISITOR_AI`(放行访客 AI)。
 
 ## 结构
 
@@ -119,7 +132,6 @@ web/
 
 ## 待办(TODO)
 
-- **访客隔离**:目前单用户、无鉴权。对外部署前必须加访问控制(反向代理 basic_auth 或
-  按访客分库)。
 - **面板交互细节**:置顶、四边缩放(桌面版有;网页版是浏览器浮层,暂未做)。
 - 需要 `zone` 提醒 / 子任务等桌面版还没有的功能时再提。
+- (访客隔离已做;上线部署 / `todo.<domain>` 仍未做。)

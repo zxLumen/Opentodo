@@ -91,11 +91,12 @@ export function maskKey(key) {
   return k.length <= 8 ? '••••' : `••••${k.slice(-4)}`
 }
 
-/** 给设置面板的状态:配置(掩码)+ 预设列表 */
-export function chatState() {
+/** 给设置面板的状态:配置(掩码)+ 预设列表 + 是否站长 */
+export function chatState(owner = false) {
   const s = getSettings()
   const key = getApiKey()
   return {
+    owner: !!owner,
     config: {
       ...s,
       hasKey: !!key,
