@@ -27,11 +27,14 @@ import { read, update, normalizeItem } from '../mcp/lib/store.js'
 import { ops, runOp } from './ops.js'
 import { chatState, listModels, saveSettings, setApiKey } from './settings.js'
 import { runChat } from './chat.js'
+import { readChat, writeChat } from './chatstore.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT || 8787)
 const DIST = path.join(HERE, 'dist')
-const DATA_DIR = path.join(HERE, 'data')
+// 运行期数据目录(访客 / 站长 / 对话 / 配置)。容器里用 OPENTODO_DATA_DIR 指到挂载卷(如 /data),
+// 否则默认 ./data —— 注意默认目录在容器可写层,重建即丢,生产务必指到卷上。
+const DATA_DIR = process.env.OPENTODO_DATA_DIR || path.join(HERE, 'data')
 const VISITORS_DIR = path.join(DATA_DIR, 'visitors')
 const OWNER_TOKEN_FILE = path.join(DATA_DIR, 'owner.token')
 
@@ -177,6 +180,11 @@ function resolveScope(req) {
   // 访客首次访问:给一份「使用提示」种子
   if (!owner && !viewing) ensureVisitorSeed(file)
   return { owner, cid, viewing, file, setCookies }
+}
+
+/** 该请求对应的「数据域」键(对话文件按此命名):站长 `owner`;访客各自的 cid;站长查看时用被查看者的 cid */
+function scopeKey(scope) {
+  return scope.viewing || (scope.owner ? 'owner' : scope.cid)
 }
 
 function send(res, status, body, headers = {}) {
@@ -354,6 +362,19 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req)
       const r = await listModels({ provider: body.provider, baseUrl: body.baseUrl })
       return send(res, 200, r)
+    }
+
+    /* ---------- 对话记录(按数据域持久化;站长查看访客时只读) ---------- */
+    if (pathname === '/api/chat/history') {
+      if (req.method === 'GET') {
+        return send(res, 200, readChat(DATA_DIR, scopeKey(scope)))
+      }
+      if (req.method === 'POST') {
+        // 站长「以访客身份查看」时只读 —— 不改动被查看访客的对话
+        if (scope.viewing) return send(res, 403, { error: '查看访客时对话只读' })
+        const body = await readBody(req)
+        return send(res, 200, writeChat(DATA_DIR, scopeKey(scope), body.messages))
+      }
     }
 
     /* ---------- 对话(SSE;站长必可用,访客默认放行;OPENTODO_VISITOR_AI=0 可关) ---------- */

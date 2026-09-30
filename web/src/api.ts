@@ -32,3 +32,30 @@ export async function applyOp(
   const { data } = await json<{ data: TodoFile }>(res)
   return data
 }
+
+/** 对话消息(持久化用;system 提示不入库) */
+export interface StoredMessage {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+/** 拉取当前数据域(站长 / 本人访客 / 被查看访客)的对话记录 */
+export async function fetchChatHistory(): Promise<StoredMessage[]> {
+  const res = await fetch('/api/chat/history', { cache: 'no-store' })
+  const j = await json<{ messages?: StoredMessage[] }>(res)
+  return j.messages ?? []
+}
+
+/** 保存当前数据域的对话记录(查看访客时服务端会 403) */
+export async function saveChatHistory(
+  messages: StoredMessage[],
+  keepalive = false,
+): Promise<void> {
+  const res = await fetch('/api/chat/history', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
+    keepalive,
+  })
+  if (!res.ok) throw new Error(`保存对话失败(${res.status})`)
+}

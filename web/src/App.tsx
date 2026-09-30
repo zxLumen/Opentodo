@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { applyOp, fetchState } from './api'
+import { applyOp, fetchChatHistory, fetchState, saveChatHistory } from './api'
 import { CANCELLED_GROUP, INBOX, UNGROUPED, type Priority, type TodoFile, type TodoItem } from './types'
 import { useProjectDrag, useRowDrag } from './useRowDrag'
 import { fastIntent } from './intent'
@@ -69,6 +69,10 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [chatBusy, setChatBusy] = useState(false)
   const streamAbort = useRef<AbortController | null>(null)
+  /** 对话持久化:已载入完毕的数据域键(与当前域不一致时不回写,避免切域串写) */
+  const loadedScopeRef = useRef<string | null>(null)
+  /** 最近一次已保存 / 已载入的对话内容(序列化后比对,避免载入后立刻回写、重复写) */
+  const lastSavedRef = useRef<string>('')
   /** 数据域:是否站长 / 正在查看哪个访客的 cid */
   const [scope, setScope] = useState<{ owner: boolean; viewing: string | null }>({
     owner: false,
@@ -80,6 +84,19 @@ export default function App() {
   const [visOpen, setVisOpen] = useState(false)
 
   const alive = useRef(true)
+  /** 给 pagehide 兜底保存用的最新值(事件监听闭包会过期,统一走 ref) */
+  const messagesRef = useRef(messages)
+  const scopeRef = useRef(scope)
+  const busyRef = useRef(false)
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+  useEffect(() => {
+    scopeRef.current = scope
+  }, [scope])
+  useEffect(() => {
+    busyRef.current = chatBusy
+  }, [chatBusy])
 
   const load = useCallback(async () => {
     try {
@@ -319,6 +336,63 @@ export default function App() {
     chatListRef.current?.scrollTo({ top: chatListRef.current.scrollHeight })
   }, [messages.length])
 
+  /** 当前数据域(对话持久化用):owner | 被查看访客 cid | self(本人访客,服务端再按 cookie 细分) */
+  const chatScope = scope.viewing || (scope.owner ? 'owner' : 'self')
+
+  // 载入当前数据域的对话记录(挂载 + 切换数据域时)
+  useEffect(() => {
+    let aliveHere = true
+    void (async () => {
+      try {
+        const msgs = await fetchChatHistory()
+        if (!aliveHere) return
+        lastSavedRef.current = JSON.stringify(msgs)
+        setMessages(msgs)
+      } catch {
+        /* 拿不到就当空,不打扰 */
+      } finally {
+        if (aliveHere) loadedScopeRef.current = chatScope
+      }
+    })()
+    return () => {
+      aliveHere = false
+    }
+  }, [chatScope])
+
+  // 保存对话(每轮结束、非流式、非「查看访客」时;防抖 + 内容去重,避免载入后回写)
+  useEffect(() => {
+    if (chatBusy || scope.viewing) return
+    if (loadedScopeRef.current !== chatScope) return
+    const toSave = messages
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({ role: m.role as 'user' | 'assistant', text: m.text }))
+    if (!toSave.length) return
+    const payload = JSON.stringify(toSave)
+    if (payload === lastSavedRef.current) return
+    const t = setTimeout(() => {
+      lastSavedRef.current = payload
+      void saveChatHistory(toSave).catch(() => {})
+    }, 500)
+    return () => clearTimeout(t)
+  }, [messages, chatBusy, scope.viewing, chatScope])
+
+  // 关页 / 切走前再兜一次(keepalive)
+  useEffect(() => {
+    const onHide = () => {
+      if (scopeRef.current.viewing || busyRef.current) return
+      const toSave = messagesRef.current
+        .filter((m) => m.role !== 'system')
+        .map((m) => ({ role: m.role as 'user' | 'assistant', text: m.text }))
+      if (!toSave.length) return
+      const payload = JSON.stringify(toSave)
+      if (payload === lastSavedRef.current) return
+      lastSavedRef.current = payload
+      void saveChatHistory(toSave, true).catch(() => {})
+    }
+    window.addEventListener('pagehide', onHide)
+    return () => window.removeEventListener('pagehide', onHide)
+  }, [])
+
   const loadChat = useCallback(async () => {
     try {
       const res = await fetch('/api/chat/state')
@@ -394,7 +468,7 @@ export default function App() {
 
   const sendChat = () => {
     const text = chatInput.trim()
-    if (!text || chatBusy) return
+    if (!text || chatBusy || scope.viewing) return
     setChatInput('')
     const convo = [...messages, { role: 'user' as const, text }]
       .filter((m) => m.role !== 'system')
@@ -730,7 +804,11 @@ export default function App() {
         <div className="chat" style={{ height: chatHeight }}>
           <div className="chat-list" ref={chatListRef}>
             {messages.length === 0 && (
-              <div className="chat-empty">和 AI 说句话,帮你增删改待办。试试「加一条 写周报」。</div>
+              <div className="chat-empty">
+                {scope.viewing
+                  ? '该访客暂无对话记录(查看访客时对话只读)。'
+                  : '和 AI 说句话,帮你增删改待办。试试「加一条 写周报」。'}
+              </div>
             )}
             {messages.map((m, i) => (
               <div key={i} className={`bubble ${m.role}`}>
@@ -741,8 +819,9 @@ export default function App() {
           <div className="chat-input">
             <textarea
               value={chatInput}
-              placeholder="和 AI 说点什么…"
+              placeholder={scope.viewing ? '查看访客时对话只读' : '和 AI 说点什么…'}
               rows={1}
+              disabled={!!scope.viewing}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -764,7 +843,7 @@ export default function App() {
               <button
                 className="send"
                 type="button"
-                disabled={!chatInput.trim()}
+                disabled={!!scope.viewing || !chatInput.trim()}
                 onClick={sendChat}
                 title="发送"
               >

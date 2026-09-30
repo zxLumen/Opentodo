@@ -20,10 +20,17 @@ npm start              # → http://localhost:8787
 
 ## 数据文件
 
-- **站长**(`OPENTODO_FILE`,默认 `web/data/todos.json`):想和本机桌面 App 共用同一份,设
+运行期数据统一放 **`OPENTODO_DATA_DIR`**(默认 `web/data`;容器里**务必指到挂载卷**,如 `/data`,
+否则落在容器可写层、重建即丢):
+
+- **站长待办**(`OPENTODO_FILE`,默认 `<DATA_DIR>/todos.json`):想和本机桌面 App 共用同一份,设
   `OPENTODO_FILE=~/.config/opentodo/todos.json`。
-- **访客**:每人一个随机 `cid`(cookie `zx_todo_cid`),数据在 `web/data/visitors/<cid>.json`。
-- 和 App / 插件 / MCP 完全兼容:同一把 mkdir 文件锁、同一条原子 rename、同一个 `revision`。
+- **访客待办**:每人一个随机 `cid`(cookie `zx_todo_cid`),数据在 `<DATA_DIR>/visitors/<cid>.json`。
+- **对话记录**:每个数据域一份 `<DATA_DIR>/chat/<key>.json`(`key` = `owner` | 访客 cid | 被查看的 cid),
+  每个域只留最近 60 条。**单独存**的原因:数据层的 `normalizeData()` 只保留待办字段,未知字段会被丢掉,
+  对话塞进 `todos.json` 保不住。
+- **配置**:`<DATA_DIR>/settings.json`、`<DATA_DIR>/chat.key`、`<DATA_DIR>/owner.token`。
+- 待办文件与 App / 插件 / MCP 完全兼容:同一把 mkdir 文件锁、同一条原子 rename、同一个 `revision`。
 
 ## 访客隔离(B 方案)
 
@@ -54,6 +61,7 @@ web/
 ├─ providers.js     供应商预设(融合博客 providers.ts)
 ├─ settings.js      聊天配置/密钥存取 + 拉模型
 ├─ chat.js          聊天引擎:流式 + tools 循环 + 指令协议兜底
+├─ chatstore.js     对话记录落盘(按数据域,原子写,最近 60 条)
 ├─ scripts/mock-openai.mjs  本地 mock provider(仅开发验证)
 ├─ src/             React 前端(视觉照搬 UI.swift)
 │   ├─ App.tsx        面板:项目栏 / 四段 / 列表 / 分组 / 对话
@@ -73,6 +81,8 @@ web/
 | POST | `/api/op` | `{ op, ...args }` → `{ data }`,应用一个操作 |
 | GET | `/api/health` | `{ ok, file }` |
 | GET | `/api/chat/state` | 聊天配置(密钥掩码)+ 供应商预设 |
+| GET | `/api/chat/history` | 当前数据域的**对话记录** `{ messages }` |
+| POST | `/api/chat/history` | 保存当前数据域对话 `{ messages }`(查看访客时 **403 只读**) |
 | POST | `/api/chat/config` | 保存 provider / baseUrl / model / 温度 / maxTokens / fastMode |
 | POST | `/api/chat/key` | 保存 API Key |
 | POST | `/api/chat/models` | 拉取该 provider 的模型列表 |
@@ -115,6 +125,14 @@ web/
 设置(面板头部 **⚙**):选供应商 → baseUrl 自动带出(**「拉取模型」**按 `/models` 拉下拉)
 → 选/填模型 → API Key → 温度 / maxTokens → 快速模式开关。
 
+## 对话记录(持久化)
+
+每次一轮对话结束,前端把该**数据域**的最近对话存到服务端(`POST /api/chat/history`),
+下次打开(刷新 / 重开浮层 / 换设备)先拉回(`GET /api/chat/history`):**站长、每个访客各自独立
+一份**,互不可见。临时提示(「AI 仅站长可用」/「模型出错」等 `system` 消息)不入库;每个域只留最近 60 条。
+
+> 若 `OPENTODO_DATA_DIR` 没指到持久卷(如容器里的 `/data`),这些记录会随容器重建一起丢。
+
 ## 供应商配置
 
 `providers.js` 融合了两处现成清单(博客 `providers.ts` 的 id/baseUrl + 桌面 App 的
@@ -142,4 +160,4 @@ web/
 
 - **面板交互细节**:置顶、四边缩放(桌面版有;网页版是浏览器浮层,暂未做)。
 - 需要 `zone` 提醒 / 子任务等桌面版还没有的功能时再提。
-- (访客隔离已做;上线部署 / `todo.<domain>` 仍未做。)
+- (访客隔离、对话持久化、SSO、`todo.<domain>` 上线均已完成。)
