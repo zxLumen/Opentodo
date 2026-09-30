@@ -46,6 +46,8 @@ export default function App() {
   const [list, setList] = useState<string>(INBOX)
   const [section, setSection] = useState<Section>('active')
   const [adding, setAdding] = useState('')
+  /** 新增条目时的分组(空 = 未分组) */
+  const [addGroup, setAddGroup] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   /** 打开「⋯」菜单的项目名 */
@@ -134,11 +136,6 @@ export default function App() {
     return out
   }, [visible, section])
 
-  const orderedIds = useMemo(
-    () => groups.flatMap((g) => g.items.map((it) => it.id)),
-    [groups],
-  )
-
   const activeCount = useCallback(
     (name: string) =>
       items.filter(
@@ -150,6 +147,15 @@ export default function App() {
     [items],
   )
 
+  /** 当前项目下出现过的分组(给输入框做候选) */
+  const groupsInList = useMemo(
+    () =>
+      [...new Set(items.filter((it) => listName(it) === list).map((it) => it.project))]
+        .filter((p): p is string => !!p)
+        .sort((a, b) => a.localeCompare(b)),
+    [items, list],
+  )
+
   const addTodo = () => {
     const text = adding.trim()
     if (!text) return
@@ -157,19 +163,29 @@ export default function App() {
     void run('add', {
       content: text,
       list,
+      project: addGroup.trim() || undefined,
       status: section === 'in_progress' ? 'in_progress' : 'pending',
     })
   }
 
+  // 拖动落点:改分组 + 组内重排都用 move(对齐桌面 move(id,toProject,beforeId:))
   const onReorder = (dragId: string, overId: string, before: boolean) => {
-    const ids = [...orderedIds]
-    const from = ids.indexOf(dragId)
-    const over = ids.indexOf(overId)
-    if (from === -1 || over === -1 || dragId === overId) return
-    ids.splice(from, 1)
-    const target = ids.indexOf(overId)
-    ids.splice(before ? target : target + 1, 0, dragId)
-    void run('reorder', { orderedIds: ids })
+    if (dragId === overId) return
+    const over = items.find((i) => i.id === overId)
+    if (!over) return
+    let beforeId: string | null = overId
+    if (!before) {
+      // 落在 over 下半 → 插到 over 所属分组里、over 之后
+      const grp = items
+        .filter(
+          (it) =>
+            listName(it) === list && inSection(it, section) && projName(it) === projName(over),
+        )
+        .sort((a, b) => a.order - b.order)
+      const i = grp.findIndex((it) => it.id === overId)
+      beforeId = i >= 0 ? (grp[i + 1]?.id ?? null) : null
+    }
+    void run('move', { id: dragId, toProject: over.project, beforeId })
   }
 
   const drag = useRowDrag({
@@ -379,6 +395,7 @@ export default function App() {
           <div className="addbar">
             <IconPlus />
             <input
+              className="add-main"
               value={adding}
               placeholder={section === 'in_progress' ? '添加进行中…' : '添加待办…'}
               onChange={(e) => setAdding(e.target.value)}
@@ -387,6 +404,23 @@ export default function App() {
               }}
               disabled={busy}
             />
+            <input
+              className="add-group"
+              list="zx-groups"
+              value={addGroup}
+              placeholder="分组"
+              title="分组(可选):已有分组可下拉选,也可直接输新名"
+              onChange={(e) => setAddGroup(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addTodo()
+              }}
+              disabled={busy}
+            />
+            <datalist id="zx-groups">
+              {groupsInList.map((g) => (
+                <option key={g} value={g} />
+              ))}
+            </datalist>
           </div>
         )}
 
@@ -418,6 +452,8 @@ export default function App() {
                       void run('update', { id: it.id, patch: { content: content.trim() } })
                     }
                   }}
+                  groupOptions={groupsInList}
+                  onSetGroup={(p) => void run('update', { id: it.id, patch: { project: p ?? '' } })}
                 />
               ))}
             </div>
@@ -447,8 +483,11 @@ function Row(props: {
   onRemove: () => void
   onEdit: () => void
   onEditEnd: (content: string | null) => void
+  groupOptions: string[]
+  onSetGroup: (project: string | null) => void
 }) {
   const { item, editing } = props
+  const [gmenu, setGmenu] = useState(false)
   return (
     <div
       className="row"
@@ -502,6 +541,9 @@ function Row(props: {
               <IconRestore />
             </button>
           )}
+          <button title="移动到分组" onClick={() => setGmenu((v) => !v)}>
+            <IconFolder />
+          </button>
           <button title="编辑" onClick={props.onEdit}>
             <IconPencil />
           </button>
@@ -512,6 +554,43 @@ function Row(props: {
             }}
           >
             <IconTrash />
+          </button>
+        </div>
+      )}
+
+      {gmenu && (
+        <div className="row-menu" onClick={(e) => e.stopPropagation()}>
+          <div className="row-menu-head">移动到分组</div>
+          <button
+            type="button"
+            onClick={() => {
+              setGmenu(false)
+              props.onSetGroup(null)
+            }}
+          >
+            未分组
+          </button>
+          {props.groupOptions.map((g) => (
+            <button
+              key={g}
+              type="button"
+              onClick={() => {
+                setGmenu(false)
+                props.onSetGroup(g)
+              }}
+            >
+              {g}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              const n = window.prompt('新分组名称')
+              setGmenu(false)
+              if (n && n.trim()) props.onSetGroup(n.trim())
+            }}
+          >
+            ＋新建分组…
           </button>
         </div>
       )}

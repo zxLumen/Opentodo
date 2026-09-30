@@ -46,8 +46,9 @@ web/
 | GET | `/api/health` | `{ ok, file }` |
 
 `op` 取值(语义对齐 `plugin/opentodo.js`):`add` / `update` / `setStatus` / `toggle` /
-`setArchived` / `remove` / `reorder` / `moveToList` / `moveList` / `addList` / `renameList` /
-`deleteList`,以及批量 `archiveCompleted` / `restoreArchived` / `purgeArchived`(按 `list` 作用域)。
+`setArchived` / `remove` / `reorder` / `move`(改分组 + 组内重排)/ `moveToList` / `moveList` /
+`addList` / `renameList` / `deleteList`,以及批量 `archiveCompleted` / `restoreArchived` /
+`purgeArchived`(按 `list` 作用域)。
 
 ## 待办(TODO)
 
@@ -55,6 +56,5 @@ web/
   按访客分库)。
 - **AI 对话 + 快速模式**:桌面版底部有「和 opencode 对话」与本地毫秒级意图;网页版暂未
   接入(桌面 App 是通过本地 `opencode serve` 实现的,搬到服务端要另选后端)。
-- **分组(project)的人工编辑**:目前靠数据里的 `project` 字段渲染分组,但网页版还没有
-  「设置/改分组」的入口(桌面版靠 AI 自动归类 + 拖到别的分组)。
+- **分组(project)**:已支持新增时选分组、行内「移动到分组」、拖到别的分组即改分组。
 - **置顶 / 点面板外收起 / 四边缩放**:桌面版面板的交互细节,网页版是浏览器浮层,暂未做。

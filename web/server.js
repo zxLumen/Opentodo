@@ -178,6 +178,44 @@ const ops = {
     return item
   },
 
+  // 改分组 / 组内重排(对齐桌面 TodoStore.move(id,toProject:beforeId:)):
+  //   把 id 的分组设为 toProject(空/"未分组" → null),并插到该组 beforeId 之前
+  //   (beforeId 为空 → 放该组末尾);两组 order 都重排为 1..n。
+  move(d, { id, toProject, beforeId }) {
+    const moving = findItem(d, id)
+    if (!moving) throw new Error(`没有 id=${id} 的条目`)
+    const list = moving.list
+    const oldProject = moving.project
+    const targetProject =
+      toProject == null || toProject === '' || toProject === '未分组' ? null : String(toProject)
+    moving.project = targetProject
+    moving.updatedAt = nowIso()
+
+    const byOrder = (a, b) =>
+      a.order !== b.order ? a.order - b.order : String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? ''))
+    const groupOf = (proj) =>
+      d.items.filter((it) => it.list === list && it.project === proj).sort(byOrder)
+
+    // 目标组(把 moving 摘出来后再定位)
+    const tg = groupOf(targetProject).filter((it) => it.id !== id)
+    let at = beforeId ? tg.findIndex((it) => it.id === beforeId) : -1
+    if (at < 0) at = tg.length
+    tg.splice(at, 0, moving)
+    tg.forEach((it, i) => {
+      it.order = i + 1
+    })
+
+    // 旧组重排(跨组时)
+    if (oldProject !== targetProject) {
+      groupOf(oldProject)
+        .filter((it) => it.id !== id)
+        .forEach((it, i) => {
+          it.order = i + 1
+        })
+    }
+    return moving
+  },
+
   // 调整项目顺序:把 name 插到 before 前面(before=null 放末尾)
   moveList(d, { name, before }) {
     const i = d.lists.indexOf(name)
