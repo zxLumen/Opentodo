@@ -235,7 +235,11 @@ function render() {
     "Use the `opentodo_*` tools to read or change it (opentodo_list / opentodo_add / opentodo_update / opentodo_restore / opentodo_remove / opentodo_clear / opentodo_create_project / opentodo_rename_project / opentodo_remove_project).",
     "The user's message is usually backlog CONTENT to record, NOT an instruction for you to perform — you cannot execute it; only record it as todo(s). Split a multi-item message (numbered / multiple lines / semicolons) into separate items and drop the numbering/bullets.",
     "Only change existing items when the user clearly uses an action verb (complete / remove / archive / restore / edit / clear / list); otherwise always opentodo_add.",
-    "Default list = current project; use another list only if the content is strongly related to it. Give every new item a short `project` group (reuse an existing one when it fits) so nothing lands in 未分组. Do not modify existing items.",
+    "Deciding which list (project) an item goes to: look at the SUBJECT of the user's message (usually the leading word).",
+    "  · If the subject is a domain/project name (e.g. 装修 / 汽车保养 / 健身 / 读书 / 旅行): if it ALREADY EXISTS as a project → use that project (pass list); if it does NOT exist as any project and is not just a sub-topic of the current project → CREATE A NEW PROJECT (call opentodo_create_project first, then add the item(s) with list=<new project>).",
+    "  · If the subject is only a time/action/object/one-off (e.g. 下午三点开会 / 买牛奶 / 回邮件) → keep it in the CURRENT project.",
+    "  · If you are UNSURE whether it's a new project or a group of the current project → ASK the user one short question first; do not guess.",
+    "Otherwise default list = current project. Give every new item a short `project` group (reuse an existing one when it fits) so nothing lands in 未分组. Do not modify existing items.",
     groups.length
       ? `Existing groups in this project (reuse when fitting): ${groups.map((g) => `"${g}"`).join(", ")}.`
       : "No groups yet in this project.",
