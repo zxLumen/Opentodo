@@ -352,8 +352,8 @@ export default function App() {
         return
       }
     }
-    // 访客:不让用站长的模型(AI 回落仅站长)
-    if (!chat?.owner) {
+    // 访客且未放行 AI:提示(默认放行,走站长配的模型)
+    if (!chat?.owner && !chat?.visitorAi) {
       setLast(
         'AI 对话仅站长可用 —— 不过你仍可手动增删待办,或用「加一条 …」「完成 …」「列出待办」这类明确指令。',
         'system',

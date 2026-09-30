@@ -21,6 +21,7 @@ export interface ProviderPreset {
 }
 export interface ChatState {
   owner: boolean
+  visitorAi: boolean
   config: ChatConfig
   providers: ProviderPreset[]
 }

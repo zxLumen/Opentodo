@@ -31,11 +31,11 @@ npm start              # → http://localhost:8787
   `data/visitors/<cid>.json` —— 访客之间、以及和站长的数据**完全隔离**。
 - **站长**:访问 `/?owner=<token>` 认领身份(token 存 `data/owner.token`,启动时会打印
   「站长入口」;`OPENTODO_OWNER_TOKEN` 可覆盖)。认领后读写的是 `OPENTODO_FILE` 那份额。
-- **AI 仅站长**:聊天配置 / 密钥、以及 LLM 对话都只对站长开放(访客 403);访客仍可用
-  **本地快速模式**(`加一条 …` 等)和完整的手动 UI。想让访客也能用 AI:
-  `OPENTODO_VISITOR_AI=1`(会走站长的模型额度,谨慎)。
+- **AI 站长/访客都能用**:LLM 对话走**站长配的 provider/model/密钥**(访客编辑的是自己那份数据)。
+  默认放行访客;`OPENTODO_VISITOR_AI=0` 可关掉(关掉后访客只能用本地快速模式)。
+  聊天**配置 / 密钥**仍**仅站长**可改(访客看不到 ⚙)。
 - 环境变量:`OPENTODO_FILE`(站长数据文件)/ `OPENTODO_OWNER_TOKEN`(站长口令)/
-  `OPENTODO_VISITOR_AI`(放行访客 AI)。
+  `OPENTODO_VISITOR_AI`(是否放行访客 AI,默认放行)。
 
 ## 结构
 

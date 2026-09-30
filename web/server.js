@@ -40,7 +40,8 @@ const OWNER_FILE = process.env.OPENTODO_FILE || path.join(DATA_DIR, 'todos.json'
 // 兜底:即便某处漏传 file,store.js 的 resolveFile() 也只会命中站长那份,**绝不会**误写到
 // 桌面 App 的数据文件以外的第三方路径。
 process.env.OPENTODO_FILE = OWNER_FILE
-const VISITOR_AI = process.env.OPENTODO_VISITOR_AI === '1'
+// 访客是否也能用 AI(走站长配的 provider/model/密钥)。默认**允许**;`OPENTODO_VISITOR_AI=0` 关闭。
+const VISITOR_AI = process.env.OPENTODO_VISITOR_AI !== '0'
 
 function ownerToken() {
   if (process.env.OPENTODO_OWNER_TOKEN) return process.env.OPENTODO_OWNER_TOKEN
@@ -211,19 +212,19 @@ const server = http.createServer(async (req, res) => {
     /* ---------- 聊天设置(仅站长) ---------- */
     const ownerOnly = () => send(res, 403, { error: '仅站长可用' })
     if (pathname === '/api/chat/state' && req.method === 'GET') {
-      return send(res, 200, chatState(scope.owner))
+      return send(res, 200, chatState(scope.owner, VISITOR_AI))
     }
     if (pathname === '/api/chat/config' && req.method === 'POST') {
       if (!scope.owner) return ownerOnly()
       const body = await readBody(req)
       saveSettings(body)
-      return send(res, 200, chatState(true))
+      return send(res, 200, chatState(true, VISITOR_AI))
     }
     if (pathname === '/api/chat/key' && req.method === 'POST') {
       if (!scope.owner) return ownerOnly()
       const body = await readBody(req)
       if (typeof body.key === 'string') setApiKey(body.key)
-      return send(res, 200, chatState(true))
+      return send(res, 200, chatState(true, VISITOR_AI))
     }
     if (pathname === '/api/chat/models' && req.method === 'POST') {
       if (!scope.owner) return ownerOnly()
@@ -232,7 +233,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, r)
     }
 
-    /* ---------- 对话(SSE;仅站长,除非 OPENTODO_VISITOR_AI=1) ---------- */
+    /* ---------- 对话(SSE;站长必可用,访客默认放行;OPENTODO_VISITOR_AI=0 可关) ---------- */
     if (pathname === '/api/chat' && req.method === 'POST') {
       if (!scope.owner && !VISITOR_AI) return ownerOnly()
       return handleChat(req, res, scope)
