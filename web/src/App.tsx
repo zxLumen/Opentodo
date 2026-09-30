@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { applyOp, fetchState } from './api'
 import { CANCELLED_GROUP, INBOX, UNGROUPED, type Priority, type TodoFile, type TodoItem } from './types'
-import { useRowDrag } from './useRowDrag'
+import { useProjectDrag, useRowDrag } from './useRowDrag'
 import {
   IconChecklist,
   IconPlus,
@@ -16,6 +16,7 @@ import {
   IconTrash,
   IconFolder,
   IconCheck,
+  IconMore,
 } from './icons'
 
 type Section = 'active' | 'in_progress' | 'done' | 'archive'
@@ -47,6 +48,10 @@ export default function App() {
   const [adding, setAdding] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  /** 打开「⋯」菜单的项目名 */
+  const [projectMenu, setProjectMenu] = useState<string | null>(null)
+  /** 正在就地重命名的项目名 */
+  const [renamingProject, setRenamingProject] = useState<string | null>(null)
 
   const alive = useRef(true)
 
@@ -172,6 +177,41 @@ export default function App() {
     onMoveToList: (dragId, to) => void run('moveToList', { id: dragId, list: to }),
   })
 
+  // 项目重排:把拖动的项目插到目标项目的上/下方(before=null 表示放末尾)
+  const onReorderProject = (name: string, overName: string, before: boolean) => {
+    if (name === overName) return
+    const rest = lists.filter((n) => n !== name)
+    const i = rest.indexOf(overName)
+    const beforeName = before ? overName : (rest[i + 1] ?? null)
+    void run('moveList', { name, before: beforeName })
+  }
+  const projDrag = useProjectDrag({ onReorder: onReorderProject })
+
+  const renameProject = (oldName: string, newName: string) => {
+    setRenamingProject(null)
+    const n = newName.trim()
+    if (!n || n === oldName) return
+    void run('renameList', { oldName, newName: n })
+  }
+
+  const deleteProject = (name: string) => {
+    const n = items.filter((it) => listName(it) === name).length
+    if (!window.confirm(`删除项目「${name}」?其下 ${n} 条待办将一并彻底删除,不可恢复。`)) return
+    setProjectMenu(null)
+    void run('deleteList', { name })
+  }
+
+  // 「⋯」菜单 / 批量动作 的开关
+  useEffect(() => {
+    if (!projectMenu) return
+    const close = (e: PointerEvent) => {
+      if ((e.target as HTMLElement).closest('.p-menu-pop, .p-more')) return
+      setProjectMenu(null)
+    }
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [projectMenu])
+
   const total = visible.length
 
   return (
@@ -184,18 +224,65 @@ export default function App() {
           <div className="projects">
             {lists.map((name) => {
               const n = activeCount(name)
+              const reorderSide =
+                projDrag.dragName && projDrag.drop.over === name
+                  ? projDrag.drop.before
+                    ? 'before'
+                    : 'after'
+                  : undefined
+              const todoTarget = drag.drop.overProject === name
               return (
-                <button
+                <div
                   key={name}
                   ref={drag.registerProject(name)}
+                  data-project={name}
                   className={`project${name === list ? ' is-active' : ''}`}
-                  data-drop={drag.drop.overProject === name ? '' : undefined}
+                  data-drop={reorderSide ?? (todoTarget ? 'target' : undefined)}
+                  data-dragging={projDrag.dragName === name ? '' : undefined}
+                  onPointerDown={projDrag.onPointerDown(name)}
                   onClick={() => setList(name)}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setProjectMenu(name)
+                  }}
                 >
                   <IconFolder />
-                  <span className="p-name">{name}</span>
-                  {n > 0 && <span className="p-count">{n}</span>}
-                </button>
+                  {renamingProject === name ? (
+                    <InlineInput initial={name} onDone={(v) => renameProject(name, v ?? name)} />
+                  ) : (
+                    <>
+                      <span className="p-name">{name}</span>
+                      {n > 0 && <span className="p-count">{n}</span>}
+                      <button
+                        className="p-more"
+                        type="button"
+                        title="更多"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setProjectMenu((m) => (m === name ? null : name))
+                        }}
+                      >
+                        <IconMore />
+                      </button>
+                    </>
+                  )}
+                  {projectMenu === name && (
+                    <div className="p-menu-pop" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProjectMenu(null)
+                          setRenamingProject(name)
+                        }}
+                      >
+                        重命名
+                      </button>
+                      <button type="button" className="danger" onClick={() => deleteProject(name)}>
+                        删除项目
+                      </button>
+                    </div>
+                  )}
+                </div>
               )
             })}
           </div>
@@ -229,16 +316,63 @@ export default function App() {
           </button>
         </header>
 
-        <div className="tabs">
-          {SECTIONS.map((s) => (
-            <button
-              key={s.key}
-              className={`tab${section === s.key ? ' is-active' : ''}`}
-              onClick={() => setSection(s.key)}
-            >
-              {s.label}
-            </button>
-          ))}
+        <div className="toolbar">
+          <div className="tabs">
+            {SECTIONS.map((s) => (
+              <button
+                key={s.key}
+                className={`tab${section === s.key ? ' is-active' : ''}`}
+                onClick={() => setSection(s.key)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+          <div className="sec-actions">
+            {section === 'active' && (
+              <button
+                type="button"
+                className="sec-btn danger"
+                disabled={busy || total === 0}
+                onClick={() => deleteProject(list)}
+              >
+                删除项目
+              </button>
+            )}
+            {section === 'done' && (
+              <button
+                type="button"
+                className="sec-btn accent"
+                disabled={busy || total === 0}
+                onClick={() => void run('archiveCompleted', { list })}
+              >
+                移入归档
+              </button>
+            )}
+            {section === 'archive' && (
+              <>
+                <button
+                  type="button"
+                  className="sec-btn accent"
+                  disabled={busy || total === 0}
+                  onClick={() => void run('restoreArchived', { list })}
+                >
+                  全部恢复
+                </button>
+                <button
+                  type="button"
+                  className="sec-btn danger"
+                  disabled={busy || total === 0}
+                  onClick={() => {
+                    if (window.confirm(`清空「${list}」的归档?共 ${total} 条,不可恢复。`))
+                      void run('purgeArchived', { list })
+                  }}
+                >
+                  清空归档
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         {(section === 'active' || section === 'in_progress') && (
@@ -422,3 +556,37 @@ function InlineEdit({ initial, onDone }: { initial: string; onDone: (v: string |
 
 // 让 TS 知道 Priority 被用到(类型导出)
 export type { Priority }
+
+/** 单行就地输入(项目重命名用)。Enter/失焦保存,Esc 取消。 */
+function InlineInput({ initial, onDone }: { initial: string; onDone: (v: string | null) => void }) {
+  const [v, setV] = useState(initial)
+  const ref = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.focus()
+    el.select()
+  }, [])
+
+  return (
+    <input
+      className="p-edit"
+      ref={ref}
+      value={v}
+      onChange={(e) => setV(e.target.value)}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={() => onDone(v)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          onDone(v)
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          onDone(null)
+        }
+      }}
+    />
+  )
+}

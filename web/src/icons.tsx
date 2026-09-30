@@ -83,3 +83,11 @@ export const IconCheck = (p: SVGProps<SVGSVGElement>) => (
     <path d="M5 12l5 5L20 7" />
   </svg>
 )
+
+export const IconMore = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base({ strokeWidth: 0, fill: 'currentColor' })}>
+    <circle cx="5" cy="12" r="2" />
+    <circle cx="12" cy="12" r="2" />
+    <circle cx="19" cy="12" r="2" />
+  </svg>
+)

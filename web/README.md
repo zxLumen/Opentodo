@@ -47,12 +47,14 @@ web/
 
 `op` 取值(语义对齐 `plugin/opentodo.js`):`add` / `update` / `setStatus` / `toggle` /
 `setArchived` / `remove` / `reorder` / `moveToList` / `moveList` / `addList` / `renameList` /
-`deleteList`。
+`deleteList`,以及批量 `archiveCompleted` / `restoreArchived` / `purgeArchived`(按 `list` 作用域)。
 
 ## 待办(TODO)
 
 - **访客隔离**:目前单用户、无鉴权。对外部署前必须加访问控制(反向代理 basic_auth 或
   按访客分库)。
-- **AI 对话**:桌面版底部有「和 opencode 对话」;网页版暂未接入(桌面 App 是通过本地
-  `opencode serve` 实现的,搬到服务端要另选后端)。
-- **拖拽**:支持同段重排与拖到左栏项目;跨分组的精细落点后续再打磨。
+- **AI 对话 + 快速模式**:桌面版底部有「和 opencode 对话」与本地毫秒级意图;网页版暂未
+  接入(桌面 App 是通过本地 `opencode serve` 实现的,搬到服务端要另选后端)。
+- **分组(project)的人工编辑**:目前靠数据里的 `project` 字段渲染分组,但网页版还没有
+  「设置/改分组」的入口(桌面版靠 AI 自动归类 + 拖到别的分组)。
+- **置顶 / 点面板外收起 / 四边缩放**:桌面版面板的交互细节,网页版是浏览器浮层,暂未做。

@@ -119,6 +119,36 @@ const ops = {
     return item
   },
 
+  // 批量:把某项目内「已完成且未归档」的全部移入归档(对齐桌面 archiveCompleted)
+  archiveCompleted(d, { list }) {
+    const target = normList(list)
+    const now = nowIso()
+    for (const it of d.items) {
+      if (it.list === target && it.status === 'completed' && !it.archivedAt) {
+        it.archivedAt = now
+        it.updatedAt = now
+      }
+    }
+  },
+
+  // 批量:恢复某项目内全部归档(清 archivedAt,状态保持不变;对齐 restoreArchived)
+  restoreArchived(d, { list }) {
+    const target = normList(list)
+    const now = nowIso()
+    for (const it of d.items) {
+      if (it.list === target && it.archivedAt) {
+        it.archivedAt = null
+        it.updatedAt = now
+      }
+    }
+  },
+
+  // 批量:清空某项目的归档(彻底删除;对齐 purgeArchived)
+  purgeArchived(d, { list }) {
+    const target = normList(list)
+    d.items = d.items.filter((it) => !(it.list === target && it.archivedAt))
+  },
+
   // 彻底删除
   remove(d, { id }) {
     const idx = d.items.findIndex((it) => it.id === id)
