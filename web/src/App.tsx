@@ -21,6 +21,21 @@ import {
   IconMore,
 } from './icons'
 
+/** 服务端内联的首屏数据(index.html 里的 window.__BOOT__),省掉首帧的 API 往返 */
+interface Boot {
+  state: TodoFile | null
+  owner: boolean
+  viewing: string | null
+  chat: ChatState | null
+  history: { messages: { role: 'user' | 'assistant'; text: string }[] }
+}
+declare global {
+  interface Window {
+    __BOOT__?: Boot
+  }
+}
+const BOOT = typeof window !== 'undefined' ? window.__BOOT__ : undefined
+
 type Section = 'active' | 'in_progress' | 'done' | 'archive'
 
 const SECTIONS: { key: Section; label: string }[] = [
@@ -42,7 +57,7 @@ const listName = (it: TodoItem) => it.list ?? INBOX
 const projName = (it: TodoItem) => it.project ?? UNGROUPED
 
 export default function App() {
-  const [data, setData] = useState<TodoFile | null>(null)
+  const [data, setData] = useState<TodoFile | null>(BOOT?.state ?? null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [list, setList] = useState<string>(INBOX)
@@ -58,26 +73,27 @@ export default function App() {
   const [renamingProject, setRenamingProject] = useState<string | null>(null)
   /** 对话消息(快速模式本地处理;将来可接 LLM) */
   const [messages, setMessages] = useState<{ role: 'user' | 'assistant' | 'system'; text: string }[]>(
-    [],
+    BOOT?.history?.messages ?? [],
   )
   const [chatInput, setChatInput] = useState('')
   const [chatHeight, setChatHeight] = useState(160)
   const chatListRef = useRef<HTMLDivElement>(null)
   const splitRef = useRef<{ y0: number; h0: number } | null>(null)
   /** 聊天设置(provider/模型/fastMode…) */
-  const [chat, setChat] = useState<ChatState | null>(null)
+  const [chat, setChat] = useState<ChatState | null>(BOOT?.chat ?? null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [chatBusy, setChatBusy] = useState(false)
   const streamAbort = useRef<AbortController | null>(null)
   /** 对话持久化:已载入完毕的数据域键(与当前域不一致时不回写,避免切域串写) */
-  const loadedScopeRef = useRef<string | null>(null)
+  const loadedScopeRef = useRef<string | null>(
+    BOOT ? BOOT.viewing || (BOOT.owner ? 'owner' : 'self') : null,
+  )
   /** 最近一次已保存 / 已载入的对话内容(序列化后比对,避免载入后立刻回写、重复写) */
-  const lastSavedRef = useRef<string>('')
+  const lastSavedRef = useRef<string>(BOOT?.history ? JSON.stringify(BOOT.history.messages ?? []) : '')
   /** 数据域:是否站长 / 正在查看哪个访客的 cid */
-  const [scope, setScope] = useState<{ owner: boolean; viewing: string | null }>({
-    owner: false,
-    viewing: null,
-  })
+  const [scope, setScope] = useState<{ owner: boolean; viewing: string | null }>(
+    BOOT ? { owner: BOOT.owner, viewing: BOOT.viewing } : { owner: false, viewing: null },
+  )
   const [visitors, setVisitors] = useState<
     { cid: string; count: number; active: number; updatedAt: string; sample: string }[]
   >([])
@@ -113,7 +129,8 @@ export default function App() {
 
   useEffect(() => {
     alive.current = true
-    void load()
+    // 有内联首屏数据就跳过首次拉取,只保留轮询
+    if (!BOOT) void load()
     const t = setInterval(() => void load(), 4000)
     return () => {
       alive.current = false
@@ -341,6 +358,8 @@ export default function App() {
 
   // 载入当前数据域的对话记录(挂载 + 切换数据域时)
   useEffect(() => {
+    // 首屏已内联本次数据域的记录,无需再拉
+    if (loadedScopeRef.current === chatScope) return
     let aliveHere = true
     void (async () => {
       try {
@@ -402,7 +421,7 @@ export default function App() {
     }
   }, [])
   useEffect(() => {
-    void loadChat()
+    if (!BOOT) void loadChat()
   }, [loadChat])
 
   const setLast = (text: string, role: 'assistant' | 'system' = 'assistant') =>

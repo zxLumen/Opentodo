@@ -22,6 +22,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import zlib from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 import { read, update, normalizeItem } from '../mcp/lib/store.js'
 import { ops, runOp } from './ops.js'
@@ -223,18 +224,150 @@ const MIME = {
   '.woff2': 'font/woff2',
 }
 
-/** 生产:把 vite 的 dist/ 当静态站点发;找不到的路径回落到 index.html(SPA) */
-function serveStatic(res, pathname) {
+/** 可压缩的文本类型(其余如图片/字体不压) */
+const COMPRESSIBLE = /^(text\/|application\/(json|javascript)|image\/svg)/
+
+/** 带 hash 的构建产物可长期强缓存;HTML 必须回源校验(否则拿到旧壳引旧资源) */
+const CACHE_IMMUTABLE = 'public, max-age=31536000, immutable'
+const CACHE_HTML = 'no-cache'
+
+/** 按 Accept-Encoding 选一种压缩(优先 brotli);不支持则 null */
+function pickEncoding(req) {
+  const ae = String(req.headers['accept-encoding'] ?? '')
+  if (/\bbr\b/.test(ae)) return 'br'
+  if (/\bgzip\b/.test(ae)) return 'gzip'
+  return null
+}
+
+const brParams = { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } }
+function compress(buf, enc) {
+  return enc === 'br' ? zlib.brotliCompressSync(buf, brParams) : zlib.gzipSync(buf, { level: 6 })
+}
+
+/** 带 Content-Encoding 的响应。`cacheKey`(内容随文件 mtime+size 固定时才给)为空则不缓存 */
+const compressCache = new Map() // `${cacheKey}:${enc}` -> Buffer
+function sendBuffer(res, status, type, buf, enc, cacheKey) {
+  const headers = { 'Content-Type': type }
+  let body = buf
+  if (enc && COMPRESSIBLE.test(type)) {
+    if (cacheKey) {
+      const key = `${cacheKey}:${enc}`
+      let compressed = compressCache.get(key)
+      if (!compressed) {
+        if (compressCache.size > 500) compressCache.clear()
+        compressed = compress(buf, enc)
+        compressCache.set(key, compressed)
+      }
+      body = compressed
+    } else {
+      body = compress(buf, enc)
+    }
+    headers['Content-Encoding'] = enc
+  }
+  headers['Content-Length'] = body.length
+  res.writeHead(status, headers)
+  res.end(body)
+}
+
+let indexCache = null // { mtimeMs, size, raw }
+function readIndexTemplate() {
+  const p = path.join(DIST, 'index.html')
+  const st = fs.statSync(p)
+  if (!indexCache || indexCache.mtimeMs !== st.mtimeMs || indexCache.size !== st.size) {
+    indexCache = { mtimeMs: st.mtimeMs, size: st.size, raw: fs.readFileSync(p, 'utf8') }
+  }
+  return indexCache.raw
+}
+
+/** 首屏 bootstrap:把首帧要用的数据内联进 HTML,省掉「JS 下载 → 再发 API」一个往返 */
+function bootFor(scope) {
+  const boot = { state: null, owner: !!scope.owner, viewing: scope.viewing ?? null, chat: null, history: { messages: [] } }
+  try {
+    boot.state = read(scope.file)
+  } catch {
+    /* ignore */
+  }
+  try {
+    boot.chat = chatState(scope.owner, VISITOR_AI)
+  } catch {
+    /* ignore */
+  }
+  try {
+    boot.history = readChat(DATA_DIR, scopeKey(scope))
+  } catch {
+    /* ignore */
+  }
+  return boot
+}
+
+function injectBoot(html, boot) {
+  // 注意转义 `<`,避免数据里出现 </script> 截断脚本
+  const json = JSON.stringify(boot).replace(/</g, '\\u003c')
+  const tag = `<script>window.__BOOT__=${json}</script>`
+  return html.includes('<head>') ? html.replace('<head>', `<head>${tag}`) : tag + html
+}
+
+/** 根路径 / SPA 回落:注入 boot,内容随数据变,用 ETag 走 304 */
+function serveIndex(req, res, enc, scope) {
+  const html = injectBoot(readIndexTemplate(), bootFor(scope))
+  const etag = `"${crypto.createHash('sha1').update(html).digest('hex').slice(0, 20)}"`
+  res.setHeader('Cache-Control', CACHE_HTML)
+  res.setHeader('ETag', etag)
+  res.setHeader('Vary', 'Accept-Encoding')
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304)
+    return res.end()
+  }
+  // 内容随数据变,不缓存压缩结果(HTML 很小,每次现压可忽略)
+  sendBuffer(res, 200, MIME['.html'], Buffer.from(html), enc, '')
+}
+
+/**
+ * 生产:把 vite 的 dist/ 当静态站点发。
+ *   - `/assets/*`(带 hash)→ 强缓存 immutable;其余文件 no-cache。
+ *   - 缺失的静态资源(带扩展名或 /assets/*)→ 真 404,绝不回落成 HTML(否则 MIME 错、白等)。
+ *   - 无扩展名的未知路径 → 回落 index.html(SPA),并内联 __BOOT__。
+ */
+function serveStatic(req, res, pathname, scope) {
   if (!fs.existsSync(DIST)) {
     return send(res, 404, 'client 还没构建:先跑 `npm run build`(开发时用 `npm run dev`)')
   }
-  const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
-  const target = path.join(DIST, rel)
-  const safe = target.startsWith(DIST) ? target : path.join(DIST, 'index.html')
-  const file = fs.existsSync(safe) && fs.statSync(safe).isFile() ? safe : path.join(DIST, 'index.html')
-  const ext = path.extname(file)
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' })
-  fs.createReadStream(file).pipe(res)
+
+  const relRaw = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
+  let rel = relRaw
+  try {
+    rel = decodeURIComponent(relRaw)
+  } catch {
+    /* 保持原样 */
+  }
+
+  const abs = path.resolve(DIST, rel)
+  const within = abs === DIST || abs.startsWith(DIST + path.sep)
+  const isFile = within && fs.existsSync(abs) && fs.statSync(abs).isFile()
+  const isHashedAsset = rel.startsWith('assets/')
+  const hasExt = path.extname(rel) !== ''
+  const enc = pickEncoding(req)
+
+  // 只有「非 index.html 的真实文件」才走文件分支(带 hash 的产物强缓存)。
+  // 根 / 与 SPA 回落、以及任何 index.html 都走注入分支。
+  if (isFile && path.basename(abs) !== 'index.html') {
+    const st = fs.statSync(abs)
+    const etag = `"${st.size.toString(16)}-${Math.round(st.mtimeMs).toString(16)}"`
+    res.setHeader('Cache-Control', isHashedAsset ? CACHE_IMMUTABLE : CACHE_HTML)
+    res.setHeader('ETag', etag)
+    res.setHeader('Vary', 'Accept-Encoding')
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304)
+      return res.end()
+    }
+    const type = MIME[path.extname(abs)] || 'application/octet-stream'
+    sendBuffer(res, 200, type, fs.readFileSync(abs), enc, `${abs}:${st.mtimeMs}:${st.size}`)
+    return
+  }
+
+  // 缺失的静态资源(带扩展名或 /assets/*)→ 真 404,绝不回落成 HTML
+  if (!isFile && (isHashedAsset || hasExt)) return send(res, 404, 'not found')
+  return serveIndex(req, res, enc, scope)
 }
 
 /** SSE 流式对话(仅站长) */
@@ -385,7 +518,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname.startsWith('/api/')) return send(res, 404, { error: 'not found' })
 
-    return serveStatic(res, pathname)
+    return serveStatic(req, res, pathname, scope)
   } catch (err) {
     return send(res, 400, { error: err instanceof Error ? err.message : String(err) })
   }

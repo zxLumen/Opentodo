@@ -77,6 +77,20 @@ web/
 └─ dist/            vite 构建产物(不入库)
 ```
 
+## 加载与缓存(线上首屏)
+
+`server.js` 发静态时做了三件事,专门解决「博客主页点开浮窗转圈久」:
+
+- **强缓存 + 校验**:`/assets/*`(vite 带 hash)发 `Cache-Control: public, max-age=31536000,
+  immutable`,二次打开 0 请求体;`index.html` 发 `no-cache` 并带 `ETag`,数据没变就回 `304`。
+- **压缩**:按 `Accept-Encoding` 出 brotli/gzip(实测入口 JS 255KB → 76KB br / 80KB gz)。
+- **首屏内联**:发 HTML 时把 `/api/state`、`/api/chat/state`、`/api/chat/history` 的数据
+  内联成 `<script>window.__BOOT__=…</script>`,前端首帧直接用,**省掉「下载 JS → 再发 3 个
+  API」的往返**(`App.tsx` 仍有 4s 轮询兜底)。
+- 未知的静态资源(带扩展名或 `/assets/*`)返回 **404**,不再回落成 HTML。
+- ⚠️ 反向代理/CDN 别强缓存 `index.html`:它内联了当次数据,必须回源(靠 ETag 走 304)。
+- 若部署平台会**缩容到 0**,首个请求还要等容器冷启(与前端无关):设最小实例数 / 保活可消除。
+
 ## HTTP 接口
 
 | 方法 | 路径 | 说明 |
