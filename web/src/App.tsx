@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { applyOp, fetchChatHistory, fetchState, saveChatHistory } from './api'
 import { CANCELLED_GROUP, INBOX, UNGROUPED, type Priority, type TodoFile, type TodoItem } from './types'
 import { useProjectDrag, useRowDrag } from './useRowDrag'
+import { useSessionState } from './sessionState'
 import { fastIntent } from './intent'
 import { SettingsPanel, type ChatState } from './Settings'
 import {
@@ -81,13 +82,13 @@ export default function App() {
   const [data, setData] = useState<TodoFile | null>(BOOT?.state ?? null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [list, setList] = useState<string>(INBOX)
-  const [section, setSection] = useState<Section>('active')
+  const [list, setList] = useSessionState<string>('list', INBOX)
+  const [section, setSection] = useSessionState<Section>('section', 'active')
   const [adding, setAdding] = useState('')
   /** 新增条目时的分组(空 = 未分组) */
   const [addGroup, setAddGroup] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useSessionState('collapsed', false)
   /** 打开「⋯」菜单的项目名 */
   const [projectMenu, setProjectMenu] = useState<string | null>(null)
   /** 正在就地重命名的项目名 */
