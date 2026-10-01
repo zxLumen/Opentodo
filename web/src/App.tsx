@@ -56,6 +56,27 @@ const inSection = (it: TodoItem, s: Section): boolean => {
 const listName = (it: TodoItem) => it.list ?? INBOX
 const projName = (it: TodoItem) => it.project ?? UNGROUPED
 
+/**
+ * 站点 AI 状态协议:把本应用的 AI 活动报给嵌入它的博客,那儿的导航栏有一盏
+ * 三色状态灯(协议见博客仓库 docs/AI-STATUS.md)。不进 iframe 时静默跳过。
+ *
+ * 目标 origin 取自 document.referrer —— 跨源时默认 referrer 策略只透出 origin,
+ * 正好够用。取不到就**不报**,绝不退回 '*':那等于把状态广播给任意嵌入页。
+ */
+const HOST_ORIGIN = (() => {
+  if (typeof document === 'undefined') return ''
+  try {
+    return document.referrer ? new URL(document.referrer).origin : ''
+  } catch {
+    return ''
+  }
+})()
+
+function reportAiState(state: 'thinking' | 'working' | 'success' | 'error' | 'idle'): void {
+  if (!HOST_ORIGIN || window.parent === window) return
+  window.parent.postMessage({ type: 'zx:ai-status', app: 'opentodo', state }, HOST_ORIGIN)
+}
+
 export default function App() {
   const [data, setData] = useState<TodoFile | null>(BOOT?.state ?? null)
   const [error, setError] = useState<string | null>(null)
@@ -434,6 +455,7 @@ export default function App() {
   /** 流式调用后端 /api/chat(token 逐字) */
   const streamLLM = async (convo: { role: string; content: string }[]) => {
     setChatBusy(true)
+    reportAiState('working')
     const ac = new AbortController()
     streamAbort.current = ac
     try {
@@ -477,8 +499,13 @@ export default function App() {
           }
         }
       }
+      reportAiState('success')
     } catch (e) {
-      if (!ac.signal.aborted) setLast(`模型出错:${e instanceof Error ? e.message : String(e)}`, 'system')
+      if (ac.signal.aborted) reportAiState('idle')
+      else {
+        setLast(`模型出错:${e instanceof Error ? e.message : String(e)}`, 'system')
+        reportAiState('error')
+      }
     } finally {
       setChatBusy(false)
       streamAbort.current = null
