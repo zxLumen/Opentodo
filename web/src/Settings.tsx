@@ -9,6 +9,10 @@ export interface ChatConfig {
   temperature: number
   maxTokens: number
   fastMode: boolean
+  /** 思考强度(如 low/medium/high);'' = 默认不发送 */
+  effort: string
+  /** 当前模型可选的思考强度档位(空 = 不支持) */
+  effortValues?: string[]
   hasKey: boolean
   apiKey: string
   envKey?: boolean
@@ -23,6 +27,8 @@ export interface ChatState {
   owner: boolean
   visitorAi: boolean
   config: ChatConfig
+  /** 当前 provider 下「模型 → 思考强度档位」 */
+  efforts?: Record<string, string[]>
   providers: ProviderPreset[]
 }
 
@@ -41,6 +47,8 @@ export function SettingsPanel({
   const [temperature, setTemperature] = useState(initial?.config.temperature ?? 0.7)
   const [maxTokens, setMaxTokens] = useState(initial?.config.maxTokens ?? 2048)
   const [fastMode, setFastMode] = useState(initial?.config.fastMode ?? true)
+  const [effort, setEffort] = useState(initial?.config.effort ?? '')
+  const [efforts, setEfforts] = useState<Record<string, string[]>>(initial?.efforts ?? {})
   const [keyInput, setKeyInput] = useState('')
   const [models, setModels] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
@@ -51,10 +59,19 @@ export function SettingsPanel({
   const hasKey = initial?.config.hasKey
   const envKey = initial?.config.envKey
 
+  // 当前模型可选的思考强度:优先查 provider 的模型映射,回退到初始配置里带的档位
+  const effortOptions =
+    efforts[model.trim().toLowerCase()] ??
+    (model === initial?.config.model ? initial?.config.effortValues ?? [] : [])
+  const validEffort = effortOptions.includes(effort) ? effort : ''
+
   const pickProvider = (id: string) => {
     setProvider(id)
     const p = providers.find((x) => x.id === id)
     setBaseUrl(id === 'custom' ? '' : p?.baseUrl ?? '')
+    // 换供应商后旧的模型档位表不再适用,清空待「拉取模型」或保存时刷新
+    setEfforts({})
+    setEffort('')
   }
 
   const saveAll = async (extra: Record<string, unknown> = {}) => {
@@ -73,10 +90,12 @@ export function SettingsPanel({
       const res = await fetch('/api/chat/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, baseUrl, model, temperature, maxTokens, fastMode, ...extra }),
+        body: JSON.stringify({ provider, baseUrl, model, temperature, maxTokens, fastMode, effort: validEffort, ...extra }),
       })
       const s = (await res.json()) as ChatState
       onChanged(s)
+      setEfforts(s.efforts ?? {})
+      setEffort(s.config.effort ?? '')
       setMsg('已保存')
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e))
@@ -94,9 +113,10 @@ export function SettingsPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider, baseUrl }),
       })
-      const j = (await res.json()) as { models?: string[]; error?: string }
+      const j = (await res.json()) as { models?: string[]; efforts?: Record<string, string[]>; error?: string }
       if (!res.ok) throw new Error(j.error || '拉取失败')
       setModels(j.models ?? [])
+      setEfforts(j.efforts ?? {})
       setMsg(`拉到 ${j.models?.length ?? 0} 个模型`)
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e))
@@ -145,6 +165,20 @@ export function SettingsPanel({
             ))}
           </datalist>
         </label>
+
+        {effortOptions.length > 0 && (
+          <label className="field">
+            <span>思考强度</span>
+            <select value={validEffort} onChange={(e) => setEffort(e.target.value)}>
+              <option value="">默认(不发送)</option>
+              {effortOptions.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <label className="field">
           <span>API Key</span>

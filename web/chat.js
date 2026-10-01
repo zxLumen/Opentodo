@@ -224,15 +224,22 @@ function safeParse(s) {
   }
 }
 
-async function streamOpenAi({ base, provider, key, model, temperature, maxTokens, messages, useTools, onEvent, signal }) {
+/** OpenAI 兼容请求体;`effort` 仅在模型支持时(设置里已校验)才带上 */
+export function openAiRequestBody({ model, temperature, maxTokens, effort, messages, useTools }) {
+  const body = { model, messages, stream: true, temperature, max_tokens: maxTokens }
+  if (effort) body.reasoning_effort = effort
+  if (useTools) body.tools = openAiTools()
+  return body
+}
+
+async function streamOpenAi({ base, provider, key, model, temperature, maxTokens, effort, messages, useTools, onEvent, signal }) {
   const headers = { 'Content-Type': 'application/json' }
   if (key) headers.Authorization = `Bearer ${key}`
   if (isOpenCodeGo(provider, base)) {
     headers['x-opencode-session'] = `opentodo-${Date.now().toString(36)}`
     headers['User-Agent'] = UA
   }
-  const body = { model, messages, stream: true, temperature, max_tokens: maxTokens }
-  if (useTools) body.tools = openAiTools()
+  const body = openAiRequestBody({ model, temperature, maxTokens, effort, messages, useTools })
 
   const res = await fetch(`${ensureUrl(base)}/chat/completions`, {
     method: 'POST',
@@ -386,6 +393,8 @@ export async function runChat({ messages, currentList, onEvent, signal, file }) 
   const state = read(file)
   let useTools = proto === 'openai'
   let useProtocol = !useTools
+  // 思考强度:只在模型支持(设置里已校验)时才带;被 provider 拒绝则去掉重试
+  let effort = settings.effort || ''
   const convo = [{ role: 'system', content: buildSystem(state, currentList, useProtocol) }, ...messages]
   const applied = []
 
@@ -398,6 +407,7 @@ export async function runChat({ messages, currentList, onEvent, signal, file }) 
           model: settings.model,
           temperature: settings.temperature,
           maxTokens: settings.maxTokens,
+          effort,
           messages: convo,
           useTools,
           onEvent,
@@ -415,16 +425,24 @@ export async function runChat({ messages, currentList, onEvent, signal, file }) 
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let res
-    try {
-      res = await callOnce()
-    } catch (e) {
-      // provider 不支持 tools(400/422)→ 退回指令协议再试一次
-      if (useTools && (e.status === 400 || e.status === 422)) {
-        useTools = false
-        useProtocol = true
-        convo[0] = { role: 'system', content: buildSystem(read(file), currentList, true) }
+    for (;;) {
+      try {
         res = await callOnce()
-      } else {
+        break
+      } catch (e) {
+        const bad = e.status === 400 || e.status === 422
+        // provider 不支持 tools → 退回指令协议
+        if (bad && useTools) {
+          useTools = false
+          useProtocol = true
+          convo[0] = { role: 'system', content: buildSystem(read(file), currentList, true) }
+          continue
+        }
+        // provider 不认 reasoning_effort → 去掉重试
+        if (bad && effort) {
+          effort = ''
+          continue
+        }
         throw e
       }
     }

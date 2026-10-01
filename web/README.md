@@ -60,9 +60,13 @@ web/
 ├─ ops.js           op 表(/api/op 与聊天的工具循环共用)
 ├─ providers.js     供应商预设(融合博客 providers.ts)
 ├─ settings.js      聊天配置/密钥存取 + 拉模型
+├─ effort.js        思考强度查表(models.dev 切片)
+├─ effort-options.json  生成的「按模型可选的思考强度」(入库)
 ├─ chat.js          聊天引擎:流式 + tools 循环 + 指令协议兜底
 ├─ chatstore.js     对话记录落盘(按数据域,原子写,最近 60 条)
 ├─ scripts/mock-openai.mjs  本地 mock provider(仅开发验证)
+├─ scripts/gen-effort-slice.mjs  生成 effort-options.json
+├─ scripts/selftest.mjs  思考强度/请求体自测(node --test)
 ├─ src/             React 前端(视觉照搬 UI.swift)
 │   ├─ App.tsx        面板:项目栏 / 四段 / 列表 / 分组 / 对话
 │   ├─ Settings.tsx   聊天设置浮层
@@ -83,7 +87,7 @@ web/
 | GET | `/api/chat/state` | 聊天配置(密钥掩码)+ 供应商预设 |
 | GET | `/api/chat/history` | 当前数据域的**对话记录** `{ messages }` |
 | POST | `/api/chat/history` | 保存当前数据域对话 `{ messages }`(查看访客时 **403 只读**) |
-| POST | `/api/chat/config` | 保存 provider / baseUrl / model / 温度 / maxTokens / fastMode |
+| POST | `/api/chat/config` | 保存 provider / baseUrl / model / 温度 / maxTokens / fastMode / effort |
 | POST | `/api/chat/key` | 保存 API Key |
 | POST | `/api/chat/models` | 拉取该 provider 的模型列表 |
 | POST | `/api/chat` | **SSE 流式对话**(快速模式未命中时) |
@@ -152,9 +156,24 @@ web/
 | `custom` | 自定义(OpenAI 兼容) |
 
 - 配置存 `web/data/settings.json`;密钥存 `web/data/chat.key`(chmod 600),env
-  `OPENTODO_CHAT_KEY` 优先。
+  `OPENTODO_CHAT_KEY` 优先;数据目录可用 `OPENTODO_DATA_DIR` 指向挂载卷。
 - 本地验证:`node scripts/mock-openai.mjs`(8901)→ 设置里 provider 选 `custom`、
   baseUrl `http://localhost:8901/v1`、模型 `mock-model`。
+
+### 思考强度(per-model effort)
+
+部分模型支持可选「思考强度」(如 `low`/`medium`/`high`,有的还有 `minimal`/`none`/
+`xhigh`/`max`)。web 直连各家接口拿不到这个能力信息,所以离线生成一份切片入库:
+
+- `web/effort-options.json` — 由 `web/scripts/gen-effort-slice.mjs` 从 models.dev 目录
+  (`~/.cache/opencode/models.json`)生成,按 模型/provider 记录档位。
+  刷新:`npm run gen:effort`(或 `--from-url https://models.dev/api.json`)。
+- `web/effort.js` — 只做查表:命中才在设置里显示「思考强度」下拉、才在请求体里下发
+  `reasoning_effort`;查不到一律不下发(避免给不支持的 provider 塞字段导致 400)。
+  请求若仍被以 400/422 拒绝,会自动去掉该字段重试一次。
+- 落库在 `settings.json` 的 `effort`(空 = 默认不发送)。换模型后若原值已不适配,保存时
+  自动清空。目录里没有的模型可用 `effortOverrides` 手动补:
+  `{ "effortOverrides": { "custom/my-model": ["low", "high"] } }`。
 
 ## 待办(TODO)
 

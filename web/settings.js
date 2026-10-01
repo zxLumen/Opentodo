@@ -7,9 +7,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defaultBaseUrl, ensureUrl, getProvider, protocolOf, PROVIDERS } from './providers.js'
+import { effortMapFor, effortValues } from './effort.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = path.join(HERE, 'data')
+// 与 server.js 保持一致:容器里用 OPENTODO_DATA_DIR 指到挂载卷,否则默认 ./data。
+// (否则设了 OPENTODO_DATA_DIR 时,配置/密钥会写进可写层而非卷,重建即丢。)
+const DATA_DIR = process.env.OPENTODO_DATA_DIR || path.join(HERE, 'data')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
 const KEY_FILE = path.join(DATA_DIR, 'chat.key')
 
@@ -23,6 +26,10 @@ const DEFAULTS = {
   maxTokens: 2048,
   /** 快速模式(本地处理明确指令);关掉则一律走模型 */
   fastMode: true,
+  /** 思考强度(如 low/medium/high);'' = 默认,不下发。可选值取决于所选模型 */
+  effort: '',
+  /** 逃生口:目录里没有的模型,可用 "<provider>/<model>": ["low","high"] 手动补 */
+  effortOverrides: {},
 }
 
 function readJson(file) {
@@ -38,12 +45,30 @@ function writeJson(file, obj) {
   fs.writeFileSync(file, JSON.stringify(obj, null, 2) + '\n')
 }
 
+/** 某 provider+model 允许的思考强度档位(优先看 settings 里的 effortOverrides) */
+export function allowedEfforts(s, model = s.model) {
+  const key = `${s.provider}/${String(model ?? '')
+    .trim()
+    .toLowerCase()}`
+  const ov = s.effortOverrides?.[key]
+  if (Array.isArray(ov) && ov.length) return ov.map(String)
+  return effortValues(s.provider, model)
+}
+
+/** 归一化 effort:非字符串→'';不被当前模型支持→'' */
+function normalizeEffort(s) {
+  const v = typeof s.effort === 'string' ? s.effort.trim() : ''
+  return v && allowedEfforts(s).includes(v) ? v : ''
+}
+
 export function getSettings() {
   const raw = readJson(SETTINGS_FILE)
   const s = { ...DEFAULTS, ...raw }
   s.provider = getProvider(s.provider) ? s.provider : DEFAULTS.provider
   if (!s.baseUrl) s.baseUrl = defaultBaseUrl(s.provider)
   s.fastMode = s.fastMode !== false
+  if (!s.effortOverrides || typeof s.effortOverrides !== 'object') s.effortOverrides = {}
+  s.effort = normalizeEffort(s)
   return s
 }
 
@@ -55,6 +80,8 @@ export function saveSettings(patch = {}) {
   if (patch.baseUrl === undefined || patch.baseUrl === '') {
     next.baseUrl = defaultBaseUrl(next.provider)
   }
+  // 校验 effort:非法/换模型后已不适配的值一律清空
+  next.effort = normalizeEffort(next)
   writeJson(SETTINGS_FILE, next)
   return next
 }
@@ -103,7 +130,11 @@ export function chatState(owner = false, visitorAi = false) {
       hasKey: !!key,
       apiKey: maskKey(key),
       envKey: !!process.env.OPENTODO_CHAT_KEY,
+      /** 当前模型可选的思考强度档位(空 = 不支持,前端隐藏下拉) */
+      effortValues: allowedEfforts(s),
     },
+    /** 当前 provider 下「模型 → 档位」,供切模型时即时刷新下拉 */
+    efforts: effortMapFor(s.provider),
     providers: PROVIDERS,
   }
 }
@@ -133,7 +164,13 @@ export async function listModels({ provider, baseUrl } = {}) {
     if (!res.ok) throw new Error(`拉取失败 ${res.status}`)
     const j = await res.json()
     const models = (j.models ?? []).map((m) => m.name).filter(Boolean)
-    return { models: [...new Set(models)].sort(), provider: pid, baseUrl: url, protocol: proto }
+    return {
+      models: [...new Set(models)].sort(),
+      efforts: {},
+      provider: pid,
+      baseUrl: url,
+      protocol: proto,
+    }
   }
 
   const res = await fetch(`${url}/models`, {
@@ -142,5 +179,5 @@ export async function listModels({ provider, baseUrl } = {}) {
   })
   if (!res.ok) throw new Error(`拉取失败 ${res.status}`)
   const models = extractOpenAiIds(await res.json())
-  return { models, provider: pid, baseUrl: url, protocol: proto }
+  return { models, efforts: effortMapFor(pid), provider: pid, baseUrl: url, protocol: proto }
 }

@@ -10,7 +10,9 @@
     "dev:web": "vite",
     "build": "vite build",
     "start": "node --env-file-if-exists=.env server.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test scripts/selftest.mjs",
+    "gen:effort": "node scripts/gen-effort-slice.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",
