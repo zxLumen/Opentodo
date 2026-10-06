@@ -25,6 +25,7 @@ export const PROVIDERS = [
   },
   { id: 'openrouter', name: 'OpenRouter', protocol: 'openai', baseUrl: 'https://openrouter.ai/api/v1' },
   { id: 'opencode-z', name: 'OpenCode Go', protocol: 'openai', baseUrl: 'https://opencode.ai/zen/go/v1' },
+  { id: 'zx-gateway', name: '博客 AI 网关', protocol: 'openai', baseUrl: process.env.ZX_AI_GATEWAY_URL || 'http://localhost:3000/api/ai/v1' },
   { id: 'custom', name: '自定义(OpenAI 兼容)', protocol: 'openai', baseUrl: '' },
 ]
 

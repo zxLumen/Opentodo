@@ -18,7 +18,7 @@ const KEY_FILE = path.join(DATA_DIR, 'chat.key')
 
 const DEFAULTS = {
   /** provider 预设 id */
-  provider: 'deepseek',
+  provider: 'zx-gateway',
   /** 空 = 用预设的 baseUrl;custom 时用户自己填 */
   baseUrl: '',
   model: '',
@@ -65,7 +65,7 @@ export function getSettings() {
   const raw = readJson(SETTINGS_FILE)
   const s = { ...DEFAULTS, ...raw }
   s.provider = getProvider(s.provider) ? s.provider : DEFAULTS.provider
-  if (!s.baseUrl) s.baseUrl = defaultBaseUrl(s.provider)
+  if (s.provider === 'zx-gateway' || !s.baseUrl) s.baseUrl = defaultBaseUrl(s.provider)
   s.fastMode = s.fastMode !== false
   if (!s.effortOverrides || typeof s.effortOverrides !== 'object') s.effortOverrides = {}
   s.effort = normalizeEffort(s)
@@ -91,11 +91,14 @@ export function saveSettings(patch = {}) {
 export function getApiKey() {
   const env = process.env.OPENTODO_CHAT_KEY
   if (env && env.trim()) return env.trim()
+  let stored = ''
   try {
-    return fs.readFileSync(KEY_FILE, 'utf8').trim()
+    stored = fs.readFileSync(KEY_FILE, 'utf8').trim()
   } catch {
-    return ''
+    stored = ''
   }
+  if (stored) return stored
+  return (process.env.ZX_AI_APP_TOKEN || '').trim()
 }
 
 export function setApiKey(key) {
