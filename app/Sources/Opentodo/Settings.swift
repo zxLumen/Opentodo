@@ -87,9 +87,10 @@ enum KeychainStore {
             if !cred.baseURL.isEmpty { opt["baseURL"] = cred.baseURL }
             if !opt.isEmpty { providers[pid] = ["options": opt] }
         }
-        // The `opentodo` agent lives ONLY in this overlay (injected via
-        // OPENCODE_CONFIG into the app's own `opencode serve`), so it never
-        // shows up as a switchable mode in the user's normal opencode sessions.
+        // The `opentodo` agent lives ONLY in this overlay (written to the app's
+        // own isolated `$XDG_CONFIG_HOME/opencode/opencode.json` and read only by
+        // the `opencode serve` the app spawns), so it never shows up as a
+        // switchable mode in the user's normal opencode sessions.
         // Its tools come from the app-provisioned plugin (see ChatBackend).
         let agent: [String: Any] = [
             "opentodo": [
@@ -109,7 +110,9 @@ enum KeychainStore {
                     + "4) 新增时 list 默认 = 当前项目；只有内容与其它项目强相关时才放到那个项目。每条新增都要带一个简短的 project（项目内分组，自行拟定，如 部署/前端/写作/生活），优先复用已有分组，尽量不要留“未分组”；不要改动既有条目。\n"
                     + "5) 当前项目与既有待办已在上下文里，不要为查看再调用 opentodo_list。\n"
                     + "回复用用户的语言，1-2 句即可，不要复述整个列表，不长篇推理。",
-                "permission": ["*": "deny", "opentodo_*": "allow"],
+                // `execute` 必须放行：V2 通过 Code Mode 的 execute 工具调用插件工具
+                // （模型写 `tools.opentodo_add(...)`）；只放行 opentodo_* 会把入口一起禁掉。
+                "permission": ["*": "deny", "execute": "allow", "opentodo_*": "allow"],
             ],
         ]
         let obj: [String: Any] = [

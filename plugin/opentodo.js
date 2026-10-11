@@ -1,14 +1,16 @@
-// Opentodo — opencode plugin
+// Opentodo — opencode V2 plugin
 //
-// Loaded only inside the Opentodo app's own `opencode serve` (the app sets
-// OPENCODE_CONFIG_DIR to a directory containing this plugin). It does two things:
+// Loaded only inside the Opentodo app's own `opencode serve` (the app keeps an
+// isolated location + config dir and copies this plugin into
+// `<location>/.opencode/plugins/opentodo/index.js`, where opencode discovers it).
+// It does two things:
 //
 //   1. Registers the `opentodo_*` tools the assistant uses to read/write the
 //      shared backlog JSON. Running inside opencode means no separate Node
 //      process is needed — the plugin runs in opencode's own runtime.
 //   2. Injects a compact backlog summary + the current project into the system
-//      prompt, so the assistant knows the list exists and which project new
-//      todos belong to.
+//      prompt (session "context" hook), so the assistant knows the list exists
+//      and which project new todos belong to.
 //
 // Data file: ~/.config/opentodo/todos.json (OPENTODO_FILE overrides).
 // Current project pointer: ~/.config/opentodo/.active (written by the app).
@@ -17,7 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { tool } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode/plugin";
 
 // ---------------------------------------------------------------------------
 // Data layer (inlined so the plugin is a single self-contained file; mirrors
@@ -257,23 +259,42 @@ function render() {
   return lines.join("\n");
 }
 
-const tools = {
-  opentodo_list: tool({
+// ---------------------------------------------------------------------------
+// V2 tool definitions (JSON Schema input; execute returns structured content).
+// ---------------------------------------------------------------------------
+
+const S = {
+  string: (extra = {}) => ({ type: "string", ...extra }),
+  nullableString: (extra = {}) => ({ anyOf: [{ type: "string" }, { type: "null" }], ...extra }),
+  boolean: (extra = {}) => ({ type: "boolean", ...extra }),
+  number: (extra = {}) => ({ type: "number", ...extra }),
+  enum: (values, extra = {}) => ({ type: "string", enum: values, ...extra }),
+};
+
+/** Build an object schema with `additionalProperties: false`. */
+function obj(properties, required = []) {
+  return { type: "object", properties, required, additionalProperties: false };
+}
+
+const TOOLS = [
+  {
+    name: "opentodo_list",
     description:
       `Read the user's personal Opentodo backlog (shared JSON at ${FILE}). ` +
       "Use this before adding/updating so you reuse existing ids. " +
       "Archived items are hidden unless include_archived=true. " +
       "`list` scopes to one project; empty or omitted returns all projects. " +
       "Returns one line per item with its id, priority, list, project and content.",
-    args: {
-      status: tool.schema.enum(STATUS).optional().describe("Only return items with this status"),
-      list: tool.schema.string().optional().describe("Only items in this project/list, e.g. 'work' or '博客'"),
-      project: tool.schema.string().optional().describe("Only return items in this project/group/category"),
-      include_completed: tool.schema.boolean().optional().describe("Include completed/cancelled items (default true)"),
-      include_archived: tool.schema.boolean().optional().describe("Include archived items (default false)"),
-    },
-    execute: async ({ status, list, project, include_completed = true, include_archived = false }) =>
-      guard(() => {
+    input: obj({
+      status: S.enum(STATUS, { description: "Only return items with this status" }),
+      list: S.string({ description: "Only items in this project/list, e.g. 'work' or '博客'" }),
+      project: S.string({ description: "Only return items in this project/group/category" }),
+      include_completed: S.boolean({ description: "Include completed/cancelled items (default true)" }),
+      include_archived: S.boolean({ description: "Include archived items (default false)" }),
+    }),
+    async execute(a) {
+      const { status, list, project, include_completed = true, include_archived = false } = a ?? {};
+      return guard(() => {
         const data = read(FILE);
         let items = data.items;
         if (status) items = items.filter((it) => it.status === status);
@@ -293,21 +314,25 @@ const tools = {
             a.order - b.order,
         );
         return formatItems(items);
-      }),
-  }),
-
-  opentodo_add: tool({
+      });
+    },
+  },
+  {
+    name: "opentodo_add",
     description:
       `Add a new item to the user's Opentodo backlog (${FILE}). Returns the new item id. ` +
       "Use the current session's project as list unless the user targets another one.",
-    args: {
-      content: tool.schema.string().min(1).describe("The task text"),
-      priority: tool.schema.enum(PRIORITY).optional().describe("Default: medium"),
-      list: tool.schema.string().optional().describe("Project/list name, e.g. 'work' or 'blog' (default: 收件箱)"),
-      project: tool.schema.string().optional().describe("Group/category within the list, e.g. 'ai lighting' or 'blog/vlog'"),
-    },
-    execute: async ({ content, priority, list, project }) =>
-      guard(() => {
+    input: obj(
+      {
+        content: S.string({ minLength: 1, description: "The task text" }),
+        priority: S.enum(PRIORITY, { description: "Default: medium" }),
+        list: S.string({ description: "Project/list name, e.g. 'work' or 'blog' (default: 收件箱)" }),
+        project: S.string({ description: "Group/category within the list, e.g. 'ai lighting' or 'blog/vlog'" }),
+      },
+      ["content"],
+    ),
+    async execute({ content, priority, list, project }) {
+      return guard(() => {
         const { data, result } = update((d) => {
           const item = normalizeItem({
             id: newId(),
@@ -322,27 +347,31 @@ const tools = {
           return item;
         }, FILE);
         return `added ${result.id}: ${result.content}\n\n${formatItems(data.items)}`;
-      }),
-  }),
-
-  opentodo_update: tool({
+      });
+    },
+  },
+  {
+    name: "opentodo_update",
     description:
       "Update an existing item by id (content, status, priority, project, list, order, archived). " +
       "Setting status to completed stamps completedAt; leaving completed clears it. " +
       "Set archived=true to move it into the archive, archived=false to restore it. " +
       "Moving `list` moves it across projects.",
-    args: {
-      id: tool.schema.string().describe("Item id from opentodo_list"),
-      content: tool.schema.string().optional(),
-      status: tool.schema.enum(STATUS).optional(),
-      priority: tool.schema.enum(PRIORITY).optional(),
-      list: tool.schema.string().nullable().optional().describe("Move to another project; null moves to 收件箱"),
-      project: tool.schema.string().nullable().optional(),
-      order: tool.schema.number().optional(),
-      archived: tool.schema.boolean().optional().describe("Archive (true) or restore (false) the item"),
-    },
-    execute: async ({ id, content, status, priority, list, project, order, archived }) =>
-      guard(() => {
+    input: obj(
+      {
+        id: S.string({ description: "Item id from opentodo_list" }),
+        content: S.string(),
+        status: S.enum(STATUS),
+        priority: S.enum(PRIORITY),
+        list: S.nullableString({ description: "Move to another project; null moves to 收件箱" }),
+        project: S.nullableString(),
+        order: S.number(),
+        archived: S.boolean({ description: "Archive (true) or restore (false) the item" }),
+      },
+      ["id"],
+    ),
+    async execute({ id, content, status, priority, list, project, order, archived }) {
+      return guard(() => {
         const { result } = update((d) => {
           const item = findItem(d, id);
           if (!item) throw new Error(`no item with id ${id}`);
@@ -365,14 +394,15 @@ const tools = {
           return item;
         }, FILE);
         return `updated ${result.id}: [${result.status}]${result.archivedAt ? " (archived)" : ""} ${result.content}`;
-      }),
-  }),
-
-  opentodo_restore: tool({
+      });
+    },
+  },
+  {
+    name: "opentodo_restore",
     description: "Bring an archived item back (clears archivedAt). Alias for update archived=false.",
-    args: { id: tool.schema.string().describe("Item id from opentodo_list with include_archived=true") },
-    execute: async ({ id }) =>
-      guard(() => {
+    input: obj({ id: S.string({ description: "Item id from opentodo_list with include_archived=true" }) }, ["id"]),
+    async execute({ id }) {
+      return guard(() => {
         const { result } = update((d) => {
           const item = findItem(d, id);
           if (!item) throw new Error(`no item with id ${id}`);
@@ -381,16 +411,17 @@ const tools = {
           return item;
         }, FILE);
         return `restored ${result.id}: ${result.content}`;
-      }),
-  }),
-
-  opentodo_remove: tool({
+      });
+    },
+  },
+  {
+    name: "opentodo_remove",
     description:
       "Permanently delete an item by id. Unarchived items are deleted for good (no recycle path). " +
       "For completed tasks that may matter later prefer update archived=true instead.",
-    args: { id: tool.schema.string().describe("Item id from opentodo_list") },
-    execute: async ({ id }) =>
-      guard(() => {
+    input: obj({ id: S.string({ description: "Item id from opentodo_list" }) }, ["id"]),
+    async execute({ id }) {
+      return guard(() => {
         const { data, result } = update((d) => {
           const idx = d.items.findIndex((it) => it.id === id);
           if (idx === -1) throw new Error(`no item with id ${id}`);
@@ -398,20 +429,21 @@ const tools = {
           return removed;
         }, FILE);
         return `removed ${result.id}: ${result.content}\n\n${formatItems(data.items)}`;
-      }),
-  }),
-
-  opentodo_clear: tool({
+      });
+    },
+  },
+  {
+    name: "opentodo_clear",
     description:
       "Clean up items. scope='completed' moves completed items into the archive (default, safe — " +
       "nothing is lost); scope='archived' permanently empties the archive; scope='all' deletes all " +
       "non-archived items. Optionally restrict to a single project via `list`.",
-    args: {
-      scope: tool.schema.enum(["completed", "archived", "all"]).optional().describe("Default: completed"),
-      list: tool.schema.string().optional().describe("Only act on items in this project/list"),
-    },
-    execute: async ({ scope = "completed", list }) =>
-      guard(() => {
+    input: obj({
+      scope: S.enum(["completed", "archived", "all"], { description: "Default: completed" }),
+      list: S.string({ description: "Only act on items in this project/list" }),
+    }),
+    async execute({ scope = "completed", list }) {
+      return guard(() => {
         const { data, result } = update((d) => {
           const now = new Date().toISOString();
           const target = list !== undefined ? normList(list) : undefined;
@@ -436,16 +468,17 @@ const tools = {
           return before - d.items.filter(inScope).length;
         }, FILE);
         return `done (${result} item(s) affected)\n\n${formatItems(data.items)}`;
-      }),
-  }),
-
-  opentodo_create_project: tool({
+      });
+    },
+  },
+  {
+    name: "opentodo_create_project",
     description:
       "Create a named project (independent todolist). Projects show in the app's project menu; " +
       "items reference them via their `list` field. Prefer this over inventing list names on add/update.",
-    args: { name: tool.schema.string().min(1).describe("Project name, e.g. 'travel' or 'work'") },
-    execute: async ({ name }) =>
-      guard(() => {
+    input: obj({ name: S.string({ minLength: 1, description: "Project name, e.g. 'travel' or 'work'" }) }, ["name"]),
+    async execute({ name }) {
+      return guard(() => {
         const trimmed = String(name || "").trim();
         if (!trimmed) throw new Error("project name empty");
         const { data } = update((d) => {
@@ -453,17 +486,21 @@ const tools = {
           return trimmed;
         }, FILE);
         return `project (created): ${trimmed}\n\nprojects: ${data.lists.map((p) => `"${p}"`).join(", ") || "(none)"}`;
-      }),
-  }),
-
-  opentodo_rename_project: tool({
-    description: "Rename a project; all its items move to the new name.",
-    args: {
-      oldName: tool.schema.string().describe("Current project name"),
-      newName: tool.schema.string().describe("New project name"),
+      });
     },
-    execute: async ({ oldName, newName }) =>
-      guard(() => {
+  },
+  {
+    name: "opentodo_rename_project",
+    description: "Rename a project; all its items move to the new name.",
+    input: obj(
+      {
+        oldName: S.string({ description: "Current project name" }),
+        newName: S.string({ description: "New project name" }),
+      },
+      ["oldName", "newName"],
+    ),
+    async execute({ oldName, newName }) {
+      return guard(() => {
         const oldN = String(oldName || "").trim();
         const newN = String(newName || "").trim();
         if (!oldN || !newN) throw new Error("project names empty");
@@ -476,15 +513,16 @@ const tools = {
           return newN;
         }, FILE);
         return `renamed ${oldN} -> ${newN}`;
-      }),
-  }),
-
-  opentodo_remove_project: tool({
+      });
+    },
+  },
+  {
+    name: "opentodo_remove_project",
     description:
       "Delete a project AND all of its items (including archived) — irreversible. Requires explicit user confirmation.",
-    args: { name: tool.schema.string().describe("Project name to remove") },
-    execute: async ({ name }) =>
-      guard(() => {
+    input: obj({ name: S.string({ description: "Project name to remove" }) }, ["name"]),
+    async execute({ name }) {
+      return guard(() => {
         const trimmed = String(name || "").trim();
         if (!trimmed) throw new Error("project name empty");
         const { result } = update((d) => {
@@ -496,16 +534,32 @@ const tools = {
           return before - d.items.length;
         }, FILE);
         return `removed project "${trimmed}", ${result} item(s) deleted`;
-      }),
-  }),
-};
-
-export const OpentodoPlugin = async () => {
-  return {
-    tool: tools,
-    "experimental.chat.system.transform": async (_input, output) => {
-      const text = render();
-      if (text) output.system.push(text);
+      });
     },
-  };
-};
+  },
+];
+
+export default Plugin.define({
+  id: "opentodo",
+  async setup(ctx) {
+    // 注入 backlog 摘要 + 当前项目到每次模型请求的 system 段。
+    await ctx.session.hook("context", (event) => {
+      const text = render();
+      if (text) event.system.push({ type: "text", text });
+    });
+
+    // 注册 opentodo_* 工具(JSON Schema 输入,execute 返回结构化 content)。
+    await ctx.tool.transform((editor) => {
+      for (const t of TOOLS) {
+        editor.add({
+          name: t.name,
+          description: t.description,
+          input: t.input,
+          async execute(input) {
+            return { content: await t.execute(input) };
+          },
+        });
+      }
+    });
+  },
+});

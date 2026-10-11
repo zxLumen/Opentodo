@@ -14,14 +14,16 @@
              ┌────────────────┼─────────────────────────┐
         Opentodo.app     app 专属插件               (可选) opentodo-mcp
       浮球 + 面板      ~/.config/opentodo/opencode/   mcp/ 独立 stdio server
-        (鼠标+对话)      plugins/opentodo.js            (给其它 MCP 客户端/开发用)
-                              │ opencode 运行时
+        (鼠标+对话)      .opencode/plugins/opentodo            (给其它 MCP 客户端/开发用)
+                              │ opencode V2 运行时
                       App 自起的 `opencode serve`
-                 (OPENCODE_CONFIG_DIR / OPENCODE_CONFIG)
+                 (XDG_CONFIG_HOME + location 隔离)
 ```
 
+> 对话后端对接 **opencode V2 HTTP API**：所有路由在 `/api/*` 下并用 Basic 认证(用户名 `opencode`,密码是自起的 serve 打印到 stdout 的 `server password …`)。V2 的 server API 与 V1 **不兼容**——插件要用 `@opencode/plugin` 的 `Plugin.define`,插件工具经 Code Mode 的 `execute` 调用,所以 agent 权限必须放行 `execute`(见 `KeychainStore.buildOverlayData`)。
+
 - **数据层**：`~/.config/opentodo/todos.json`（`OPENTODO_FILE` 可覆盖），schema 见 `shared/schema.md`。
-- **工具层（关键）**：`plugin/opentodo.js` 是 opencode 插件，注册 `opentodo_*` 工具（增删改查/归档/项目）并往系统提示注入当前项目与待办摘要。它运行在 **opencode 自带的运行时**里，所以**不需要 node、不需要独立的 MCP 进程**。
+- **工具层（关键）**：`plugin/opentodo.js` 是 opencode **V2** 插件（`@opencode/plugin` + `Plugin.define`），注册 `opentodo_*` 工具（增删改查/归档/项目）并往系统提示注入当前项目与待办摘要。它运行在 **opencode 自带的运行时**里，所以**不需要 node、不需要独立的 MCP 进程**。
 - **App**：`app/`，SwiftUI + AppKit `NSPanel`。菜单栏常驻 + 可拖浮球 + 面板（**左侧项目栏** + 待办列表 + 对话）。对话后端是 App 自己拉起的 `opencode serve`。
 - **MCP（可选）**：`mcp/` 是一个独立的 stdio MCP server，功能与插件一致，供其它 MCP 客户端或开发使用；App 本身不依赖它。
 

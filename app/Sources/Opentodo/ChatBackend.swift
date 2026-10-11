@@ -40,7 +40,16 @@ enum OpenCodeLocator {
     }
 }
 
-/// Talks to a dedicated `opencode serve` instance over HTTP.
+/// Talks to a dedicated `opencode serve` (OpenCode **V2** HTTP API) over HTTP.
+///
+/// V2 differences from V1 (see https://opencode.ai/v2/docs/api):
+///   · every route lives under `/api/*` and requires HTTP Basic auth. A serve we
+///     spawn prints `server password <pw>` on stdout, so we read that pipe and
+///     authenticate as `opencode:<pw>`.
+///   · requests are scoped to a *location* (a directory). We use the app's own
+///     config dir, where we drop the `opentodo` plugin.
+///   · `POST /api/session/{id}/prompt` only *admits* the message; the reply has
+///     to be polled from `GET /api/session/{id}/message` until it completes.
 @MainActor
 final class ChatBackend: ObservableObject {
     @Published var messages: [ChatMessage] = []
@@ -50,15 +59,30 @@ final class ChatBackend: ObservableObject {
     private var store: TodoStore { .shared }
     private var sessionID: String?
     private var serverProcess: Process?
+    private var serverStdout: Pipe?
+    private var stdoutBuffer = Data()
+    private var servePassword: String?
     private var currentTask: Task<Void, Never>?
     private var currentSessionID: String?
 
     private var activePort: Int?
     private var baseURL: URL { URL(string: "http://127.0.0.1:\(activePort ?? settings.port)")! }
 
+    /// App 专属的 serve 位置(location):插件与配置都放这里,和其它 opencode 会话完全隔离。
+    private var locationDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/opentodo/opencode")
+    }
+
+    /// App 专属 XDG 配置根:让 serve 只读我们生成的全局配置,不加载用户 `~/.config/opencode`。
+    private var xdgConfigHome: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/opentodo/xdg")
+    }
+
     init() {}
 
-    /// 启动时预置 App 专属 opencode 配置（插件目录 + 隔离的 XDG 配置根 + 覆盖层），使首次对话前一切就绪。
+    /// 启动时预置 App 专属 opencode 配置(插件目录 + 隔离的 XDG 配置根 + 覆盖层),使首次对话前一切就绪。
     func prepareEnvironment() {
         reapStaleServes()
         _ = writeProviderOverrides()
@@ -127,49 +151,58 @@ final class ChatBackend: ObservableObject {
 
     private var catalogCache: (storedAt: Date, catalog: [ProviderInfo])?
 
-    /// 拉取服务商与模型目录（带 5 分钟内存缓存）。返回全部服务商；`connected` 标记已配 Key 的。
+    /// 拉取服务商与模型目录（带 5 分钟内存缓存）。返回全部服务商；`connected` 标记可用的。
     func fetchCatalog() async -> [ProviderInfo] {
         if let cache = catalogCache,
            Date().timeIntervalSince(cache.storedAt) < 300 {
             return cache.catalog
         }
         do { try await ensureServer() } catch { return [] }
-        guard let (data, _) = try? await request("provider", method: "GET"),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let all = obj["all"] as? [[String: Any]] else { return [] }
-        let connected = Set(obj["connected"] as? [String] ?? [])
+
+        // providers: id -> (name, activation)
+        var nameByID: [String: String] = [:]
+        var activeByID: [String: Bool] = [:]
+        if let (pdata, _) = try? await request("api/provider", method: "GET"),
+           let pobj = try? JSONSerialization.jsonObject(with: pdata) as? [String: Any],
+           let plist = pobj["data"] as? [[String: Any]] {
+            for p in plist {
+                guard let pid = p["id"] as? String else { continue }
+                nameByID[pid] = p["name"] as? String ?? pid
+                activeByID[pid] = (p["activation"] as? String) != "disabled"
+            }
+        }
+
+        guard let (mdata, _) = try? await request("api/model", method: "GET"),
+              let mobj = try? JSONSerialization.jsonObject(with: mdata) as? [String: Any],
+              let mlist = mobj["data"] as? [[String: Any]] else { return [] }
+
+        var byProvider: [String: [ModelOption]] = [:]
+        for m in mlist {
+            guard let pid = m["providerID"] as? String, let mid = m["id"] as? String else { continue }
+            if (m["enabled"] as? Bool) == false { continue }
+            let variants = (m["variants"] as? [[String: Any]] ?? [])
+                .compactMap { $0["id"] as? String }
+            let cost = m["cost"] as? [String: Any]
+            let inputCost = (cost?["input"] as? NSNumber)?.doubleValue
+            let outputCost = (cost?["output"] as? NSNumber)?.doubleValue
+            byProvider[pid, default: []].append(ModelOption(
+                provider: pid,
+                model: mid,
+                name: m["name"] as? String ?? mid,
+                family: m["family"] as? String ?? "",
+                variants: variants.sorted(),
+                inputCost: inputCost,
+                outputCost: outputCost
+            ))
+        }
 
         var providers: [ProviderInfo] = []
-        for p in all {
-            guard let pid = p["id"] as? String else { continue }
-            let name = p["name"] as? String ?? pid
-            let source = p["source"] as? String ?? ""
-            let rawModels = p["models"] as? [String: Any] ?? [:]
-            var models: [ModelOption] = []
-            for (mid, mv) in rawModels {
-                guard let m = mv as? [String: Any] else { continue }
-                var variants: [String] = []
-                if let vs = m["variants"] as? [String: Any] {
-                    variants = vs.keys.sorted()
-                }
-                let cost = m["cost"] as? [String: Any]
-                let inputCost = (cost?["input"] as? NSNumber)?.doubleValue
-                let outputCost = (cost?["output"] as? NSNumber)?.doubleValue
-                models.append(ModelOption(
-                    provider: pid,
-                    model: mid,
-                    name: m["name"] as? String ?? mid,
-                    family: m["family"] as? String ?? "",
-                    variants: variants,
-                    inputCost: inputCost,
-                    outputCost: outputCost
-                ))
-            }
+        for (pid, models) in byProvider {
             providers.append(ProviderInfo(
                 id: pid,
-                displayName: name,
-                source: source,
-                connected: connected.contains(pid),
+                displayName: nameByID[pid] ?? pid,
+                source: "",
+                connected: activeByID[pid] ?? true,
                 models: models.sorted { $0.id < $1.id }
             ))
         }
@@ -195,6 +228,10 @@ final class ChatBackend: ObservableObject {
     }
 
     private func terminateServer() {
+        serverStdout?.fileHandleForReading.readabilityHandler = nil
+        serverStdout = nil
+        servePassword = nil
+        stdoutBuffer.removeAll()
         guard let process = serverProcess else {
             activePort = nil
             sessionID = nil
@@ -215,14 +252,13 @@ final class ChatBackend: ObservableObject {
     }
 
     /// 启动时回收上次遗留的、由本 App 拉起的 `opencode serve`
-    /// （通过环境变量 OPENCODE_CONFIG 指向我们的覆盖层来识别，不误杀用户的 TUI serve）。
+    /// （通过环境变量 OPENTODO_SERVE=1 识别，不误杀用户的 TUI / 共享服务）。
     private func reapStaleServes() {
-        let marker = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/opentodo/opencode-overrides.jsonc").path
         guard let pids = runCommand("/usr/bin/pgrep", ["-f", "opencode serve"]) else { return }
         for token in pids.split(whereSeparator: \.isNewline) {
             guard let pid = Int(token.trimmingCharacters(in: .whitespaces)), pid > 0 else { continue }
-            guard let info = runCommand("/bin/ps", ["-E", "-p", "\(pid)"]), info.contains(marker) else { continue }
+            guard let info = runCommand("/bin/ps", ["-E", "-p", "\(pid)"]),
+                  info.contains("OPENTODO_SERVE=1") else { continue }
             kill(pid_t(pid), SIGKILL)
         }
     }
@@ -248,13 +284,38 @@ final class ChatBackend: ObservableObject {
             || text.lowercased().contains("step limit")
     }
 
-    /// 把钥匙串里的独立密钥写成 serve 覆盖配置（OPENCODE_CONFIG 指向它），返回配置文件路径。
+    /// App 专属的 opencode 配置目录：只被 App 拉起的 serve 通过 XDG_CONFIG_HOME 加载，
+    /// 因此里面的 opentodo 插件（提供 opentodo_* 工具 + 注入上下文）不会出现在其它 opencode 会话。
+    private func appConfigDir() -> URL { locationDir }
+
+    private func provisionXdgConfigHome() -> URL {
+        let dir = xdgConfigHome
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// 把 `opentodo` 插件复制到 location 的 `.opencode/plugins/opentodo/`（V2 会自动发现）。
+    /// 幂等,每次覆盖以保持最新。
+    @discardableResult
+    private func provisionPlugin() -> URL {
+        let dir = appConfigDir()
+        let plugins = dir.appendingPathComponent(".opencode/plugins/opentodo")
+        try? FileManager.default.createDirectory(at: plugins, withIntermediateDirectories: true)
+        if let src = Bundle.main.resourceURL?.appendingPathComponent("plugin/opentodo.js"),
+           FileManager.default.fileExists(atPath: src.path) {
+            let dst = plugins.appendingPathComponent("index.js")
+            try? FileManager.default.removeItem(at: dst)
+            try? FileManager.default.copyItem(at: src, to: dst)
+        }
+        return dir
+    }
+
+    /// 把钥匙串里的独立密钥 + opentodo agent 写成 serve 的全局配置
+    /// (`<XDG_CONFIG_HOME>/opencode/opencode.json`)。
     @discardableResult
     private func writeProviderOverrides() -> String {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/opentodo")
+        let dir = xdgConfigHome.appendingPathComponent("opencode")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
 
         var credentials: [String: KeychainStore.Credential] = [:]
         for pid in settings.credentialProviders {
@@ -263,7 +324,7 @@ final class ChatBackend: ObservableObject {
             }
         }
         let data = KeychainStore.buildOverlayData(credentials: credentials)
-        let path = dir.appendingPathComponent("opencode-overrides.jsonc")
+        let path = dir.appendingPathComponent("opencode.json")
         do {
             try data.write(to: path, options: [.atomic])
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
@@ -273,142 +334,215 @@ final class ChatBackend: ObservableObject {
         return path.path
     }
 
-    /// App 专属的 opencode 配置目录：只被 App 拉起的 serve 通过 OPENCODE_CONFIG_DIR 加载，
-    /// 因此里面的 opentodo 插件（提供 opentodo_* 工具 + 注入上下文）不会出现在其它 opencode 会话。
-    private func appConfigDir() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/opentodo/opencode")
+    // MARK: - HTTP
+
+    private var authHeader: String? {
+        guard let pw = servePassword else { return nil }
+        return "Basic " + Data("opencode:\(pw)".utf8).base64EncodedString()
     }
 
-    /// App 专属的 XDG 配置根：让 App 的 serve 不加载全局 `~/.config/opencode`
-    /// 的配置与插件，从而避免全局插件影响 App 对话
-    /// （smart-voice 的语音提醒、aistatus 把 App 会话当成 session 捕捉）。
-    /// 认证仍在数据目录（XDG_DATA_HOME 未隔离），标准 provider 照常可用。
-    private func xdgConfigHome() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/opentodo/xdg")
-    }
-
-    @discardableResult
-    private func provisionXdgConfigHome() -> URL {
-        let dir = xdgConfigHome()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
-
-    /// 从 App bundle 把插件复制到专属目录（幂等，每次覆盖以保持最新）。
-    @discardableResult
-    private func provisionPlugin() -> URL {
-        let dir = appConfigDir()
-        let plugins = dir.appendingPathComponent("plugins")
-        try? FileManager.default.createDirectory(at: plugins, withIntermediateDirectories: true)
-        if let src = Bundle.main.resourceURL?.appendingPathComponent("plugin/opentodo.js"),
-           FileManager.default.fileExists(atPath: src.path) {
-            let dst = plugins.appendingPathComponent("opentodo.js")
-            try? FileManager.default.removeItem(at: dst)
-            try? FileManager.default.copyItem(at: src, to: dst)
+    private func url(_ path: String, query: [String: String] = [:]) -> URL {
+        var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        if !query.isEmpty {
+            comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         }
-        return dir
+        return comps.url!
     }
 
-    private func health(idle: Bool = false, timeout: TimeInterval = 1, port: Int? = nil) async -> Bool {
-        let target = port ?? activePort ?? settings.port
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(target)/global/health")!)
+    private func request(
+        _ path: String,
+        method: String,
+        body: [String: Any]? = nil,
+        query: [String: String] = [:]
+    ) async throws -> (Data, URLResponse) {
+        var req = URLRequest(url: url(path, query: query))
+        req.httpMethod = method
+        req.timeoutInterval = TimeInterval(max(10, settings.timeoutSeconds))
+        if let authHeader { req.setValue(authHeader, forHTTPHeaderField: "Authorization") }
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        return try await URLSession.shared.data(for: req)
+    }
+
+    private func json(
+        _ path: String,
+        method: String = "GET",
+        body: [String: Any]? = nil,
+        query: [String: String] = [:]
+    ) async throws -> [String: Any] {
+        let (data, resp) = try await request(path, method: method, body: body, query: query)
+        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(domain: "opentodo", code: http.statusCode, userInfo: [
+                NSLocalizedDescriptionKey: "opencode 返回 \(http.statusCode)\(text.isEmpty ? "" : ": \(text.prefix(200))")",
+            ])
+        }
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NSError(domain: "opentodo", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "opencode 返回了非 JSON 响应",
+            ])
+        }
+        return obj
+    }
+
+    private func health(timeout: TimeInterval = 1, port: Int? = nil) async -> Bool {
+        guard servePassword != nil else { return false }
+        let target = port ?? activePort
+        guard let target, let u = URL(string: "http://127.0.0.1:\(target)/api/info") else { return false }
+        var req = URLRequest(url: u)
         req.timeoutInterval = timeout
+        if let authHeader { req.setValue(authHeader, forHTTPHeaderField: "Authorization") }
         do {
             let (_, resp) = try await URLSession.shared.data(for: req)
-            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
-            if ok, idle, serverProcess != nil {
-                // Owned serve is still healthy; nothing more to do.
-            }
-            return ok
+            return (resp as? HTTPURLResponse)?.statusCode == 200
         } catch {
             return false
         }
     }
 
-    private func hasOpentodoAgent(on port: Int) async -> Bool {
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/agent")!)
-        req.timeoutInterval = 2
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
-              let agents = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return false
-        }
-        return agents.contains { ($0["name"] as? String) == "opentodo" }
+    private func hasOpentodoAgent() async -> Bool {
+        guard let obj = try? await json("api/agent", query: ["location[directory]": appConfigDir().path]),
+              let list = obj["data"] as? [[String: Any]] else { return false }
+        return list.contains { ($0["id"] as? String) == "opentodo" }
     }
 
-    /// 是否已配置至少一个非空独立密钥/端点（此时必须用自家带 OPENCODE_CONFIG 的 serve）。
-    private func wantsKeyOverrides() -> Bool {
-        for pid in settings.credentialProviders {
-            if let c = KeychainStore.load(providerID: pid),
-               !c.key.isEmpty || !c.baseURL.isEmpty {
-                return true
-            }
-        }
-        return false
-    }
-
-    /// Picks the port to talk to: reuse an owned serve, reuse a foreign serve that
-    /// already has the `opentodo` agent (e.g. another tool's fresh serve), otherwise
-    /// spawn our own `opencode serve` on the first free port.
+    /// Picks the first free port and spawns our own `opencode serve` there.
+    /// V2 has no "reuse a foreign serve" mode (our agent/plugin live in our own
+    /// location + XDG config), so we always own the process.
     private func ensureServer() async throws {
         if let owned = serverProcess, owned.isRunning, await health() { return }
-
+        terminateServer()
+        let bin = try OpenCodeLocator.find(explicit: settings.opencodeBin)
+        var lastError: Error?
         for delta in 0..<25 {
-            let port = settings.port + delta
-
-            if await health(timeout: 0.4, port: port) {
-                // 配置了独立密钥时不可复用外部 serve（它没带我们的 OPENCODE_CONFIG 覆写），
-                // 一律自起带覆写的 serve。
-                if await hasOpentodoAgent(on: port), !wantsKeyOverrides() {
-                    activePort = port
-                    return
-                }
-                continue // foreign or misconfigured serve without our agent; skip it
+            do {
+                try await spawnServe(bin: bin, port: settings.port + delta)
+                return
+            } catch {
+                lastError = error
             }
-
-            let bin = try OpenCodeLocator.find(explicit: settings.opencodeBin)
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: bin)
-            p.arguments = ["serve", "--port", "\(port)", "--hostname", "127.0.0.1"]
-            p.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-            p.standardOutput = Pipe()
-            p.standardError = Pipe()
-            var env = ProcessInfo.processInfo.environment
-            env["OPENCODE_CONFIG"] = writeProviderOverrides()
-            env["OPENCODE_CONFIG_DIR"] = provisionPlugin().path
-            env["XDG_CONFIG_HOME"] = provisionXdgConfigHome().path
-            p.environment = env
-            try p.run()
-            serverProcess = p
-            activePort = port
-            for _ in 0..<40 {
-                try await Task.sleep(nanoseconds: 250_000_000)
-                if await health(port: port) { return }
-            }
-            p.terminate()
-            if p.isRunning { kill(p.processIdentifier, SIGKILL) }
-            serverProcess = nil
-            activePort = nil
-            throw NSError(domain: "opentodo", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "opencode serve 启动超时（端口 \(port)）",
-            ])
         }
-        throw NSError(domain: "opentodo", code: 1, userInfo: [
+        throw lastError ?? NSError(domain: "opentodo", code: 1, userInfo: [
             NSLocalizedDescriptionKey: "找不到可用的 opencode serve 端口",
         ])
     }
 
+    private func spawnServe(bin: String, port: Int) async throws {
+        _ = writeProviderOverrides()
+        let loc = provisionPlugin()
+        _ = provisionXdgConfigHome()
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: bin)
+        p.arguments = ["serve", "--port", "\(port)", "--hostname", "127.0.0.1"]
+        p.currentDirectoryURL = loc
+        let out = Pipe()
+        let err = Pipe()
+        p.standardOutput = out
+        p.standardError = err
+        var env = ProcessInfo.processInfo.environment
+        env["XDG_CONFIG_HOME"] = xdgConfigHome.path
+        env["OPENTODO_SERVE"] = "1"
+        p.environment = env
+
+        servePassword = nil
+        stdoutBuffer.removeAll()
+        out.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            Task { @MainActor in self?.consumeStdout(data) }
+        }
+        // V2 的 serve 日志走 stderr；必须排空，否则缓冲写满会把它堵死。
+        err.fileHandleForReading.readabilityHandler = { handle in
+            _ = handle.availableData
+        }
+
+        do {
+            try p.run()
+        } catch {
+            throw NSError(domain: "opentodo", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "无法启动 opencode serve：\(error.localizedDescription)",
+            ])
+        }
+        serverProcess = p
+        serverStdout = out
+        activePort = port
+
+        // 等它把 "server password <pw>" 打到 stdout（这样我们才能认证 V2 API）。
+        for _ in 0..<80 { // 80 × 250ms = 20s
+            if servePassword != nil { return }
+            if !p.isRunning { break }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        terminateServer()
+        throw NSError(domain: "opentodo", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "opencode serve 启动超时（端口 \(port)）",
+        ])
+    }
+
+    /// Reads the serve's stdout line by line, capturing `server password <pw>`.
+    private func consumeStdout(_ data: Data) {
+        stdoutBuffer.append(data)
+        while let nl = stdoutBuffer.firstIndex(of: 0x0A) {
+            let lineData = stdoutBuffer[stdoutBuffer.startIndex..<nl]
+            stdoutBuffer.removeSubrange(stdoutBuffer.startIndex...nl)
+            guard let line = String(data: lineData, encoding: .utf8) else { continue }
+            let marker = "server password "
+            if let r = line.range(of: marker) {
+                let pw = String(line[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !pw.isEmpty { servePassword = pw }
+            }
+        }
+    }
+
+    // MARK: - Session
+
     private func ensureSession() async throws -> String {
         if let sessionID { return sessionID }
-        let (data, _) = try await request("session", method: "POST", body: ["title": "Opentodo"])
-        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let id = obj["id"] as? String else {
-            throw NSError(domain: "opentodo", code: 3, userInfo: [NSLocalizedDescriptionKey: "无法创建 opencode 会话"])
+        var body: [String: Any] = [
+            "location": ["directory": appConfigDir().path],
+            "agent": "opentodo",
+        ]
+        if let mp = settings.modelParts {
+            var model: [String: Any] = ["providerID": mp.provider, "id": mp.model]
+            if !settings.variant.isEmpty { model["variant"] = settings.variant }
+            body["model"] = model
+        }
+        let obj = try await json("api/session", method: "POST", body: body)
+        guard let data = obj["data"] as? [String: Any], let id = data["id"] as? String else {
+            throw NSError(domain: "opentodo", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "无法创建 opencode 会话",
+            ])
         }
         sessionID = id
         return id
+    }
+
+    private func sessionMessages(_ sessionID: String) async throws -> [[String: Any]] {
+        let obj = try await json("api/session/\(sessionID)/message")
+        return obj["data"] as? [[String: Any]] ?? []
+    }
+
+    /// 从一条消息里抽出 assistant 的文字(按 order 拼接 text 段)。
+    private func textOf(_ m: [String: Any]) -> String {
+        (m["content"] as? [[String: Any]] ?? [])
+            .filter { ($0["type"] as? String) == "text" }
+            .compactMap { $0["text"] as? String }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func createdOf(_ m: [String: Any]) -> Double {
+        ((m["time"] as? [String: Any])?["created"] as? NSNumber)?.doubleValue ?? 0
+    }
+
+    /// 该会话是否仍在执行(V2 的 /api/session/active)。
+    private func isSessionActive(_ sessionID: String) async -> Bool {
+        guard let obj = try? await json("api/session/active"),
+              let data = obj["data"] as? [String: Any] else { return false }
+        return data[sessionID] != nil
     }
 
     private func postMessage(sessionID: String, text: String) async throws -> String {
@@ -418,45 +552,59 @@ final class ChatBackend: ObservableObject {
         let context =
             "[Opentodo 上下文] 当前项目：\(project)。新增待办默认归入该项目（list=\(listArg)）；"
             + "仅当用户明确指定其他项目或要求跨项目时才改变。\n\n"
-        var body: [String: Any] = [
-            "parts": [["type": "text", "text": context + text]],
-            "agent": "opentodo",
-        ]
-        if let mp = settings.modelParts {
-            body["model"] = ["providerID": mp.provider, "modelID": mp.model]
-        }
-        if !settings.variant.isEmpty { body["variant"] = settings.variant }
 
-        let (data, resp) = try await request("session/\(sessionID)/message", method: "POST", body: body)
-        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
-            throw NSError(domain: "opentodo", code: http.statusCode, userInfo: [
-                NSLocalizedDescriptionKey: "opencode 返回 \(http.statusCode)",
+        let before = Set((try await sessionMessages(sessionID)).compactMap { $0["id"] as? String })
+
+        _ = try await json("api/session/\(sessionID)/prompt", method: "POST", body: ["text": context + text])
+
+        // V2 的 prompt 只做「收件」：回复要等这一回合真正跑完再取。
+        // 注意两点(实测)：
+        //   · /message 是【倒序】(最新的在前)，不能靠"数组最后一条"取回复；
+        //   · 一个回合会有多条 assistant 消息 —— 工具那条 finish=tool-calls 没有文字,
+        //     最终文字在 finish=stop 那条。所以要按 created 取最新且【文字非空】的那条。
+        // 回合结束的可靠信号：会话从 /api/session/active 里消失(连续两次确认，避免起步竞态)。
+        let deadline = Date().addingTimeInterval(TimeInterval(max(10, settings.timeoutSeconds)))
+        var fresh: [[String: Any]] = []
+        var idleStreak = 0
+        while Date() < deadline {
+            if Task.isCancelled { throw CancellationError() }
+            fresh = (try await sessionMessages(sessionID)).filter {
+                ($0["type"] as? String) == "assistant"
+                    && !before.contains(($0["id"] as? String) ?? "")
+            }
+            if !fresh.isEmpty, !(await isSessionActive(sessionID)) {
+                idleStreak += 1
+                if idleStreak >= 2 { break }
+            } else {
+                idleStreak = 0
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+
+        // 取本轮新增里 created 最大、且有文字的那条。
+        let replied = fresh.sorted { createdOf($0) < createdOf($1) }.last { !textOf($0).isEmpty }
+        if let final = replied {
+            if let err = final["error"] as? [String: Any] {
+                let msg = err["message"] as? String ?? "opencode 返回错误"
+                throw NSError(domain: "opentodo", code: 5, userInfo: [NSLocalizedDescriptionKey: msg])
+            }
+            return textOf(final)
+        }
+        // 没有文字：先看有没有报错，再判断是超时还是真·空回复。
+        if let err = fresh.compactMap({ $0["error"] as? [String: Any] }).last {
+            let msg = err["message"] as? String ?? "opencode 返回错误"
+            throw NSError(domain: "opentodo", code: 5, userInfo: [NSLocalizedDescriptionKey: msg])
+        }
+        if fresh.isEmpty {
+            throw NSError(domain: "opentodo", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "模型响应超时（> \(settings.timeoutSeconds)s）",
             ])
         }
-        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let parts = obj["parts"] as? [[String: Any]] else {
-            return "(无回复)"
-        }
-        let texts = parts.compactMap { p -> String? in
-            (p["type"] as? String) == "text" ? (p["text"] as? String) : nil
-        }
-        let joined = texts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return joined.isEmpty ? "(无回复)" : joined
+        return "(无回复)"
     }
 
     private func abort() async {
         guard let sid = currentSessionID else { return }
-        _ = try? await request("session/\(sid)/abort", method: "POST")
-    }
-
-    private func request(_ path: String, method: String, body: [String: Any]? = nil) async throws -> (Data, URLResponse) {
-        var req = URLRequest(url: baseURL.appendingPathComponent(path))
-        req.httpMethod = method
-        req.timeoutInterval = TimeInterval(max(10, settings.timeoutSeconds))
-        if let body {
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        }
-        return try await URLSession.shared.data(for: req)
+        _ = try? await json("api/session/\(sid)/interrupt", method: "POST")
     }
 }
