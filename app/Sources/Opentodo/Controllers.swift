@@ -21,8 +21,33 @@ final class ClickDragHostingView<Content: View>: NSHostingView<Content> {
     private var moved = false
     private let threshold: CGFloat = 4
 
+    /// 指针进入/离开本窗口（app 未激活时也触发），用于悬停滑出/收起。
+    var onMouseBoundary: (() -> Void)?
+    /// 指针在本窗口内移动（高频，调用方需自行节流）。
+    var onMouseMoved: (() -> Void)?
+    private var trackingArea: NSTrackingArea?
+
     override func hitTest(_ point: NSPoint) -> NSView? { self }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// 用 `.activeAlways` 追踪区替代常驻轮询定时器：即使 app 处于非激活状态，
+    /// 指针进出球体窗口也能收到事件；窗口移动后重新添加以刷新内部状态。
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onMouseBoundary?() }
+    override func mouseExited(with event: NSEvent) { onMouseBoundary?() }
+    override func mouseMoved(with event: NSEvent) { onMouseMoved?() }
 
     override func mouseDown(with event: NSEvent) {
         startMouse = NSEvent.mouseLocation
@@ -102,7 +127,8 @@ final class FloatingBallController {
     private var armed = false
     private var dragging = false
     private var suppressSave = false
-    private var edgeTimer: Timer?
+    private var globalMouseMonitor: Any?
+    private var lastTickTime: TimeInterval = 0
 
     /// 收起时露出的球体比例（1/4）。
     private let revealFraction: CGFloat = 0.25
@@ -126,11 +152,19 @@ final class FloatingBallController {
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.isReleasedWhenClosed = false
+        // 配合 NSTrackingArea(.mouseMoved) 接收球窗口内的指针移动事件。
+        panel.acceptsMouseMovedEvents = true
 
         host = ClickDragHostingView(rootView: BallView(store: store, settings: settings))
         host.onPress = { [weak self] in self?.pressBegan() }
         host.onClick = { [weak self] in self?.pressEnded(); self?.onClick?() }
         host.onDragEnd = { [weak self] in self?.pressEnded(); self?.snapToEdge() }
+        host.onMouseBoundary = { [weak self] in
+            MainActor.assumeIsolated { self?.boundaryTick() }
+        }
+        host.onMouseMoved = { [weak self] in
+            MainActor.assumeIsolated { self?.eventTick() }
+        }
         panel.contentView = host
 
         moveObserver = NotificationCenter.default.addObserver(
@@ -143,7 +177,9 @@ final class FloatingBallController {
         }
     }
 
-    deinit { edgeTimer?.invalidate() }
+    deinit {
+        if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
+    }
 
     var frame: NSRect { panel.frame }
 
@@ -172,14 +208,14 @@ final class FloatingBallController {
 
     private func pressBegan() {
         dragging = true
-        stopTimer()
+        stopMonitoring()
         // 点/拖收起中的气泡时先立即滑出，保证面板锚点位置正确。
         if retracted { setRetracted(false, animated: false) }
     }
 
     private func pressEnded() {
         dragging = false
-        updateTimer()
+        updateMonitoring()
     }
 
     /// 吸附到最近的左/右边缘；靠边则收起，中间则普通贴边。
@@ -216,25 +252,43 @@ final class FloatingBallController {
         } else {
             setRetracted(false, animated: animated)
         }
-        updateTimer()
+        updateMonitoring()
     }
 
-    private func updateTimer() {
+    /// 事件驱动：仅在靠边且未拖动时挂一个全局 mouseMoved 监听（指针在本窗口之外
+    /// 移动时触发），窗口内移动由 NSTrackingArea 触发。空闲时不挂任何周期定时器，
+    /// 从而允许 App Nap。
+    private func updateMonitoring() {
         if edge != nil && !dragging {
-            guard edgeTimer == nil else { return }
-            let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.tick() }
+            guard globalMouseMonitor == nil else { return }
+            globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+                MainActor.assumeIsolated { self?.eventTick() }
             }
-            RunLoop.main.add(timer, forMode: .common)
-            edgeTimer = timer
         } else {
-            stopTimer()
+            stopMonitoring()
         }
     }
 
-    private func stopTimer() {
-        edgeTimer?.invalidate()
-        edgeTimer = nil
+    private func stopMonitoring() {
+        if let globalMouseMonitor {
+            NSEvent.removeMonitor(globalMouseMonitor)
+            self.globalMouseMonitor = nil
+        }
+    }
+
+    /// 进入/离开球窗口是低频且关键的事件，立即处理，不做节流。
+    private func boundaryTick() {
+        guard edge != nil, !dragging else { return }
+        tick()
+    }
+
+    /// 指针移动可能高频触发，节流到 ~60Hz，避免每次移动都算几何。
+    private func eventTick() {
+        guard edge != nil, !dragging else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastTickTime >= 1.0 / 60.0 else { return }
+        lastTickTime = now
+        tick()
     }
 
     /// 轮询鼠标位置：收起时鼠标进入露出块→滑出；滑出时鼠标离开→收起。
@@ -266,6 +320,8 @@ final class FloatingBallController {
     private func moveSuppressed(animated: Bool, _ body: () -> Void) {
         suppressSave = true
         body()
+        // 窗口移动后刷新追踪区，避免 AppKit 内部"指针仍在窗口内"的过期状态。
+        host.updateTrackingAreas()
         DispatchQueue.main.asyncAfter(deadline: .now() + (animated ? 0.4 : 0.05)) { [weak self] in
             self?.suppressSave = false
         }
