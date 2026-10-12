@@ -60,6 +60,7 @@ final class ChatBackend: ObservableObject {
     private var sessionID: String?
     private var serverProcess: Process?
     private var serverStdout: Pipe?
+    private var serverStderr: Pipe?
     private var stdoutBuffer = Data()
     private var servePassword: String?
     private var currentTask: Task<Void, Never>?
@@ -229,7 +230,9 @@ final class ChatBackend: ObservableObject {
 
     private func terminateServer() {
         serverStdout?.fileHandleForReading.readabilityHandler = nil
+        serverStderr?.fileHandleForReading.readabilityHandler = nil
         serverStdout = nil
+        serverStderr = nil
         servePassword = nil
         stdoutBuffer.removeAll()
         guard let process = serverProcess else {
@@ -449,15 +452,6 @@ final class ChatBackend: ObservableObject {
 
         servePassword = nil
         stdoutBuffer.removeAll()
-        out.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            Task { @MainActor in self?.consumeStdout(data) }
-        }
-        // V2 的 serve 日志走 stderr；必须排空，否则缓冲写满会把它堵死。
-        err.fileHandleForReading.readabilityHandler = { handle in
-            _ = handle.availableData
-        }
 
         do {
             try p.run()
@@ -466,8 +460,30 @@ final class ChatBackend: ObservableObject {
                 NSLocalizedDescriptionKey: "无法启动 opencode serve：\(error.localizedDescription)",
             ])
         }
+
+        out.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            // 管道到达 EOF 后 readabilityHandler 会被反复唤醒：必须在此摘除，
+            // 否则 serve 退出后这里会 100% 空转烧 CPU。
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            Task { @MainActor in self?.consumeStdout(data) }
+        }
+        // V2 的 serve 日志走 stderr；必须排空，否则缓冲写满会把它堵死。
+        // 同样要在 EOF 时摘除 handler，避免 serve 退出后空转。
+        err.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+        }
+
         serverProcess = p
         serverStdout = out
+        serverStderr = err
         activePort = port
 
         // 等它把 "server password <pw>" 打到 stdout（这样我们才能认证 V2 API）。
