@@ -1,4 +1,6 @@
 import SwiftUI
+import Foundation
+import UniformTypeIdentifiers
 import OpentodoCore
 
 struct TodoListView: View {
@@ -8,6 +10,8 @@ struct TodoListView: View {
     @State private var showVoice = false
     @State private var showChat = false
     @State private var showSettings = false
+    @State private var draggingId: String?
+    @State private var lastDropTarget: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,31 +29,41 @@ struct TodoListView: View {
             if model.sections.isEmpty {
                 emptyState
             } else {
-                List {
-                    ForEach(model.sections) { section in
-                        Section {
-                            ForEach(section.items) { item in
-                                TodoDropRow(
-                                    item: item,
-                                    group: group(for: section),
-                                    draggable: section.title != "已取消"
-                                ) { editing = item }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    actions(for: item)
+                // List 里 onDrop 在 iOS 上不可靠（系统会拦截行内 drop），
+                // 改成 ScrollView + LazyVStack：分组标题 sticky，行内 onDrop 才真正生效。
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        ForEach(model.sections) { section in
+                            Section {
+                                ForEach(section.items) { item in
+                                    TodoDropRow(
+                                        item: item,
+                                        group: group(for: section),
+                                        draggable: section.title != "已取消",
+                                        draggingId: $draggingId,
+                                        lastDropTarget: $lastDropTarget
+                                    ) { editing = item }
+                                    .padding(.horizontal, 16)
+                                    .overlay(alignment: .bottom) {
+                                        Divider().padding(.leading, 44)
+                                    }
                                 }
+                            } header: {
+                                DropSectionHeader(
+                                    title: section.title,
+                                    count: section.items.count,
+                                    group: group(for: section),
+                                    enabled: section.title != "已取消",
+                                    draggingId: $draggingId,
+                                    lastDropTarget: $lastDropTarget
+                                )
                             }
-                        } header: {
-                            DropSectionHeader(
-                                title: section.title,
-                                count: section.items.count,
-                                group: group(for: section),
-                                enabled: section.title != "已取消"
-                            )
                         }
                     }
+                    .padding(.bottom, 8)
                 }
-                .listStyle(.plain)
                 .refreshable { await model.refresh() }
+                .background(Color(.systemBackground))
             }
 
             addBar
@@ -185,80 +199,6 @@ struct TodoListView: View {
         newText = ""
         model.add(text, status: model.segment == .inProgress ? "in_progress" : "pending")
     }
-
-    @ViewBuilder
-    private func actions(for item: TodoItem) -> some View {
-        if item.isArchived {
-            Button {
-                model.unarchive(item)
-            } label: {
-                Label("恢复", systemImage: "arrow.uturn.backward")
-            }
-            .tint(.blue)
-            Button(role: .destructive) {
-                model.delete(item)
-            } label: {
-                Label("删除", systemImage: "trash")
-            }
-        } else {
-            Button(role: .destructive) {
-                model.delete(item)
-            } label: {
-                Label("删除", systemImage: "trash")
-            }
-
-            switch item.status {
-            case "pending":
-                Button {
-                    model.start(item)
-                } label: {
-                    Label("开始", systemImage: "play")
-                }
-                .tint(.blue)
-                Button {
-                    model.cancel(item)
-                } label: {
-                    Label("取消", systemImage: "minus.circle")
-                }
-                .tint(.orange)
-            case "in_progress":
-                Button {
-                    model.toggle(item)
-                } label: {
-                    Label("完成", systemImage: "checkmark")
-                }
-                .tint(.green)
-                Button {
-                    model.cancel(item)
-                } label: {
-                    Label("取消", systemImage: "minus.circle")
-                }
-                .tint(.orange)
-            case "completed":
-                Button {
-                    model.archive(item)
-                } label: {
-                    Label("归档", systemImage: "archivebox")
-                }
-                .tint(.indigo)
-                Button {
-                    model.reopen(item)
-                } label: {
-                    Label("重开", systemImage: "arrow.uturn.backward")
-                }
-                .tint(.orange)
-            case "cancelled":
-                Button {
-                    model.reopen(item)
-                } label: {
-                    Label("重开", systemImage: "arrow.uturn.backward")
-                }
-                .tint(.blue)
-            default:
-                EmptyView()
-            }
-        }
-    }
 }
 
 struct TodoDropRow: View {
@@ -266,6 +206,8 @@ struct TodoDropRow: View {
     let item: TodoItem
     let group: String?
     let draggable: Bool
+    @Binding var draggingId: String?
+    @Binding var lastDropTarget: String?
     let onEdit: () -> Void
 
     @State private var targeted = false
@@ -273,27 +215,72 @@ struct TodoDropRow: View {
     var body: some View {
         if draggable {
             row
-                .draggable(item.id) { preview }
-                .dropDestination(for: String.self) { ids, _ in
-                    guard let id = ids.first, id != item.id else { return false }
-                    return model.moveToGroup(id: id, to: group, beforeId: item.id)
-                } isTargeted: { targeted = $0 }
-                .listRowBackground(targeted ? Color.accentColor.opacity(0.10) : Color.clear)
+                .onDrop(of: [.text], delegate: RowDropDelegate(
+                    item: item,
+                    group: group,
+                    draggingId: $draggingId,
+                    lastDropTarget: $lastDropTarget,
+                    targeted: $targeted,
+                    model: model
+                ))
+                .background(targeted ? Color.accentColor.opacity(0.10) : Color.clear)
         } else {
             row
         }
     }
 
     private var row: some View {
-        TodoRow(item: item, onEdit: onEdit)
+        TodoRow(
+            item: item,
+            onEdit: onEdit,
+            showDragHandle: draggable,
+            dragProvider: {
+                draggingId = item.id
+                lastDropTarget = nil
+                return NSItemProvider(item: item.id as NSString, typeIdentifier: UTType.text.identifier)
+            }
+        )
+        .accessibilityIdentifier("row-\(item.id)")
+    }
+}
+
+private struct RowDropDelegate: DropDelegate {
+    let item: TodoItem
+    let group: String?
+    @Binding var draggingId: String?
+    @Binding var lastDropTarget: String?
+    @Binding var targeted: Bool
+    let model: AppModel
+
+    private var key: String { "row:\(item.id)" }
+
+    func dropEntered(info: DropInfo) {
+        targeted = true
+        guard let draggedId = draggingId, draggedId != item.id else { return }
+        guard lastDropTarget != key else { return }
+        lastDropTarget = key
+        // 边拖边调整，松手前就能看到落点；跨分组时 group 会不同。
+        MainActor.assumeIsolated {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                _ = model.moveToGroup(id: draggedId, to: group, beforeId: item.id)
+            }
+        }
     }
 
-    private var preview: some View {
-        Text(item.content)
-            .font(.body)
-            .lineLimit(2)
-            .padding(10)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    func dropExited(info: DropInfo) {
+        targeted = false
+        if lastDropTarget == key { lastDropTarget = nil }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        targeted = false
+        draggingId = nil
+        lastDropTarget = nil
+        return true
     }
 }
 
@@ -303,17 +290,23 @@ struct DropSectionHeader: View {
     let count: Int
     let group: String?
     let enabled: Bool
+    @Binding var draggingId: String?
+    @Binding var lastDropTarget: String?
 
     @State private var targeted = false
 
     var body: some View {
         if enabled {
             header
-                .dropDestination(for: String.self) { ids, _ in
-                    guard let id = ids.first else { return false }
-                    return model.moveToGroup(id: id, to: group, beforeId: nil)
-                } isTargeted: { targeted = $0 }
-                .background(targeted ? Color.accentColor.opacity(0.10) : Color.clear)
+                .onDrop(of: [.text], delegate: GroupDropDelegate(
+                    group: group,
+                    key: "header:\(title)",
+                    draggingId: $draggingId,
+                    lastDropTarget: $lastDropTarget,
+                    targeted: $targeted,
+                    model: model
+                ))
+                .background(targeted ? Color.accentColor.opacity(0.12) : Color(.systemBackground))
         } else {
             header
         }
@@ -327,7 +320,87 @@ struct DropSectionHeader: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(Color(.systemBackground))
         .contentShape(Rectangle())
+        .accessibilityIdentifier("section-\(title)")
+    }
+}
+
+private struct GroupDropDelegate: DropDelegate {
+    let group: String?
+    let key: String
+    @Binding var draggingId: String?
+    @Binding var lastDropTarget: String?
+    @Binding var targeted: Bool
+    let model: AppModel
+
+    func dropEntered(info: DropInfo) {
+        targeted = true
+        guard let draggedId = draggingId else { return }
+        guard lastDropTarget != key else { return }
+        lastDropTarget = key
+        MainActor.assumeIsolated {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                _ = model.moveToGroup(id: draggedId, to: group, beforeId: nil)
+            }
+        }
+    }
+
+    func dropExited(info: DropInfo) {
+        targeted = false
+        if lastDropTarget == key { lastDropTarget = nil }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        targeted = false
+        draggingId = nil
+        lastDropTarget = nil
+        return true
+    }
+}
+
+struct TodoActionMenu: View {
+    @EnvironmentObject private var model: AppModel
+    let item: TodoItem
+
+    var body: some View {
+        Menu {
+            if item.isArchived {
+                Button("从归档恢复") { model.unarchive(item) }
+            } else {
+                switch item.status {
+                case "pending":
+                    Button("开始") { model.start(item) }
+                    Button("取消") { model.cancel(item) }
+                case "in_progress":
+                    Button("完成") { model.toggle(item) }
+                    Button("取消") { model.cancel(item) }
+                case "completed":
+                    Button("归档") { model.archive(item) }
+                    Button("重新打开") { model.reopen(item) }
+                case "cancelled":
+                    Button("重新打开") { model.reopen(item) }
+                default:
+                    EmptyView()
+                }
+            }
+            Divider()
+            Button("彻底删除", role: .destructive) { model.delete(item) }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 36)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel("更多操作")
     }
 }
 
@@ -335,6 +408,8 @@ struct TodoRow: View {
     @EnvironmentObject private var model: AppModel
     let item: TodoItem
     let onEdit: () -> Void
+    var showDragHandle: Bool = false
+    var dragProvider: (() -> NSItemProvider)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -366,9 +441,6 @@ struct TodoRow: View {
                     if item.isArchived {
                         tag("归档", color: .indigo)
                     }
-                    if item.project != nil {
-                        tag(item.projectName, color: .secondary)
-                    }
                     if item.priority == "high" {
                         Image(systemName: "exclamationmark.circle.fill")
                             .font(.caption2)
@@ -380,7 +452,21 @@ struct TodoRow: View {
             .onTapGesture(perform: onEdit)
 
             Spacer(minLength: 0)
+
+            TodoActionMenu(item: item)
+
+            if showDragHandle {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 30, height: 36)
+                    .contentShape(Rectangle())
+                    .onDrag { dragProvider?() ?? NSItemProvider() }
+                    .accessibilityIdentifier("drag-handle")
+                    .accessibilityLabel("拖动排序")
+            }
         }
+        .contentShape(Rectangle())
         .padding(.vertical, 5)
     }
 
