@@ -42,6 +42,14 @@ final class AppModel: ObservableObject {
     init() {
         let local = LocalStore()
         let settings = SettingsStore.shared
+
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-UITestSeedGroups") {
+            local.seedUITestGroups()
+            settings.currentList = TodoItem.inboxName
+        }
+        #endif
+
         self.local = local
         self.settings = settings
         self.sync = SyncService(settings: settings)

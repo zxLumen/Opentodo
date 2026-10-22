@@ -315,6 +315,42 @@ final class LocalStore {
         return (a.createdAt ?? "") < (b.createdAt ?? "")
     }
 
+    #if DEBUG
+    /// 仅 UI 测试使用：写入固定分组的数据，便于验证跨分组拖拽。
+    func seedUITestGroups() {
+        let now = Self.iso()
+        func item(_ id: String, _ content: String, _ project: String, _ order: Double) -> TodoItem {
+            TodoItem(
+                id: id,
+                content: content,
+                status: "pending",
+                priority: "medium",
+                project: project,
+                list: TodoItem.inboxName,
+                order: order,
+                createdAt: now,
+                updatedAt: now
+            )
+        }
+        let file = TodoFile(
+            version: TodoFile.currentVersion,
+            revision: 1,
+            updatedAt: now,
+            items: [
+                item("alpha", "Alpha", "A", 1),
+                item("bravo", "Bravo", "A", 2),
+                item("charlie", "Charlie", "B", 1),
+                item("delta", "Delta", "B", 2),
+            ],
+            lists: [TodoItem.inboxName],
+            listsUpdatedAt: now
+        )
+        if let data = try? Self.encode(file) {
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+    #endif
+
     // MARK: - Helpers
 
     private func backup() {

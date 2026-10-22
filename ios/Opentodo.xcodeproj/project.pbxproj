@@ -12,6 +12,7 @@
 		1816AF11458EE6BCDBEE9F10 /* SpeechRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46653C9FF194A585BD75E904 /* SpeechRecognizer.swift */; };
 		2A2D9A0E355DACF14EF20E6B /* LocalStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DCC2AB2DC42FD56596631B4 /* LocalStoreTests.swift */; };
 		3636E0E7B805B9B241588957 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC069259E5463097432A1BCA /* SettingsView.swift */; };
+		37027AA0FBDABCE281F99FED /* DragUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70425F7439F724F9648136D /* DragUITests.swift */; };
 		6EE99EE34F29AB184C7B85F6 /* VoiceIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB3CA27DEC5553EB9B9C144C /* VoiceIntent.swift */; };
 		771C71150FC6D9CB235BBA9F /* ChatClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3B0CDA9F39E12185E4D9721 /* ChatClient.swift */; };
 		7C402D34B464FE3C1AA16D60 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 634506AFEE2D8448F2CBE46E /* SyncService.swift */; };
@@ -28,6 +29,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		15D2D90533CD4248DBE8EB76 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A04AFF6F4896DFD7ABC31B55 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F982A2327B68A1349C4FCB18;
+			remoteInfo = Opentodo;
+		};
 		ED652D2AD2DDC8D10B320B59 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A04AFF6F4896DFD7ABC31B55 /* Project object */;
@@ -38,6 +46,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		167B093098E9BB1DE75A36E9 /* OpentodoUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OpentodoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1B4B629CBC88962A4C947CD7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		33751FF2A8D3F53026BB9D0D /* OpentodoTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OpentodoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3DCC2AB2DC42FD56596631B4 /* LocalStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalStoreTests.swift; sourceTree = "<group>"; };
@@ -49,6 +58,7 @@
 		66DB352BD05C8774A333A7EA /* VoiceIntentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceIntentTests.swift; sourceTree = "<group>"; };
 		8BD020D814DD04EF27ABCC24 /* OpentodoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpentodoApp.swift; sourceTree = "<group>"; };
 		9104CEE90D7F2B87D06E2EE2 /* VoiceCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCaptureView.swift; sourceTree = "<group>"; };
+		B70425F7439F724F9648136D /* DragUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DragUITests.swift; sourceTree = "<group>"; };
 		BA39B3E81E31775C9EBE4EEF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BFC435DFD0F4CFCD0BE9805D /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		C33F1D896ABAD9DB3ECDFDC4 /* OpentodoCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OpentodoCore; path = ../shared/swift/OpentodoCore; sourceTree = SOURCE_ROOT; };
@@ -78,6 +88,7 @@
 			children = (
 				56235BDBD867D7CAC71974BE /* Opentodo.app */,
 				33751FF2A8D3F53026BB9D0D /* OpentodoTests.xctest */,
+				167B093098E9BB1DE75A36E9 /* OpentodoUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -90,11 +101,20 @@
 			name = Packages;
 			sourceTree = "<group>";
 		};
+		53AD55EAE2A6196F4E8FF1F7 /* OpentodoUITests */ = {
+			isa = PBXGroup;
+			children = (
+				B70425F7439F724F9648136D /* DragUITests.swift */,
+			);
+			path = OpentodoUITests;
+			sourceTree = "<group>";
+		};
 		DD51EA6F9BF7534F0A65899E = {
 			isa = PBXGroup;
 			children = (
 				EE83A1C10718C63279400154 /* Opentodo */,
 				E85FD4F58EA59B6C41AE6BE3 /* OpentodoTests */,
+				53AD55EAE2A6196F4E8FF1F7 /* OpentodoUITests */,
 				455FCCCE672EE75AB516213E /* Packages */,
 				01A07D5C308C73ABF1F124CC /* Products */,
 			);
@@ -153,6 +173,24 @@
 			productReference = 33751FF2A8D3F53026BB9D0D /* OpentodoTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		C1B01B2997AAEFF723B3C248 /* OpentodoUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 722FE7EE6CC3CCB1F0A84C8D /* Build configuration list for PBXNativeTarget "OpentodoUITests" */;
+			buildPhases = (
+				17F6A121533A199CAD34A03F /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C8E7F6D509EA235D8A7CDF27 /* PBXTargetDependency */,
+			);
+			name = OpentodoUITests;
+			packageProductDependencies = (
+			);
+			productName = OpentodoUITests;
+			productReference = 167B093098E9BB1DE75A36E9 /* OpentodoUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		F982A2327B68A1349C4FCB18 /* Opentodo */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 48F15E799758684394812EC1 /* Build configuration list for PBXNativeTarget "Opentodo" */;
@@ -186,6 +224,11 @@
 						DevelopmentTeam = T8TG4WAR43;
 						ProvisioningStyle = Automatic;
 					};
+					C1B01B2997AAEFF723B3C248 = {
+						DevelopmentTeam = T8TG4WAR43;
+						ProvisioningStyle = Automatic;
+						TestTargetID = F982A2327B68A1349C4FCB18;
+					};
 					F982A2327B68A1349C4FCB18 = {
 						DevelopmentTeam = T8TG4WAR43;
 						ProvisioningStyle = Automatic;
@@ -211,6 +254,7 @@
 			targets = (
 				F982A2327B68A1349C4FCB18 /* Opentodo */,
 				30DB16CCE63F96B85C709C29 /* OpentodoTests */,
+				C1B01B2997AAEFF723B3C248 /* OpentodoUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -228,6 +272,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		17F6A121533A199CAD34A03F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				37027AA0FBDABCE281F99FED /* DragUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9A806E2D368EB2EE0DD079B1 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -265,6 +317,11 @@
 			target = F982A2327B68A1349C4FCB18 /* Opentodo */;
 			targetProxy = ED652D2AD2DDC8D10B320B59 /* PBXContainerItemProxy */;
 		};
+		C8E7F6D509EA235D8A7CDF27 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F982A2327B68A1349C4FCB18 /* Opentodo */;
+			targetProxy = 15D2D90533CD4248DBE8EB76 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -286,6 +343,23 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
+		};
+		28F0AE75A7A6D332F495F91E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.opentodo.ios.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Opentodo;
+			};
+			name = Debug;
 		};
 		40DD8E9C90EFA35137ABFDCC /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -452,6 +526,23 @@
 			};
 			name = Release;
 		};
+		D2BD690225CF94FBC3E16E49 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.opentodo.ios.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Opentodo;
+			};
+			name = Release;
+		};
 		F0D28B6CA01D5EB00B67DC31 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -486,6 +577,15 @@
 			buildConfigurations = (
 				7C110C0130C480C104BDAE3F /* Debug */,
 				15AB452B8FA9DB5C35FE4FC5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		722FE7EE6CC3CCB1F0A84C8D /* Build configuration list for PBXNativeTarget "OpentodoUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				28F0AE75A7A6D332F495F91E /* Debug */,
+				D2BD690225CF94FBC3E16E49 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

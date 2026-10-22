@@ -68,3 +68,26 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.opentodo.ios.tests
         GENERATE_INFOPLIST_FILE: YES
+
+  OpentodoUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: OpentodoUITests
+    dependencies:
+      - target: Opentodo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.opentodo.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Opentodo
+
+schemes:
+  Opentodo:
+    build:
+      targets:
+        Opentodo: all
+    test:
+      targets:
+        - OpentodoTests
+        - OpentodoUITests
