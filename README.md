@@ -1,6 +1,6 @@
 # Opentodo
 
-给 opencode 用的悬浮待办。点桌面上的浮球，从它左下角弹出待办面板——可以用鼠标勾选/添加/编辑/拖拽，也可以直接和 opencode 对话调整。所有客户端共用一份 JSON。
+给 opencode 用的悬浮待办。点桌面上的浮球，从它左下角弹出待办面板——可以用鼠标勾选/添加/编辑/拖拽，也可以直接和 opencode 对话调整。Mac / Web / iOS 三端最终同步到同一份 JSON。
 
 <img src="https://github.com/zxLumen/Opentodo/releases/download/assets/demo.gif" width="640" alt="Opentodo 演示">
 
@@ -9,23 +9,59 @@
 ## 架构
 
 ```
-                    ~/.config/opentodo/todos.json   (唯一真相源, 带 revision)
-                              ▲ 原子读写 + 文件锁
-             ┌────────────────┼─────────────────────────┐
-        Opentodo.app     app 专属插件               (可选) opentodo-mcp
-      浮球 + 面板      ~/.config/opentodo/opencode/   mcp/ 独立 stdio server
-        (鼠标+对话)      .opencode/plugins/opentodo            (给其它 MCP 客户端/开发用)
-                              │ opencode V2 运行时
-                      App 自起的 `opencode serve`
-                 (XDG_CONFIG_HOME + location 隔离)
+        云端 Web 服务 (todos.json 唯一真相源, 带 revision)
+        ┌──────────────┼──────────────────────────────┐
+        │        GET /api/state · POST /api/op        │
+        │        POST /api/sync  ← 三端合并入口        │
+        │        POST /api/devices/pair (设备令牌)     │
+        └──────────────┼──────────────────────────────┘
+                       │ HTTPS
+        ┌──────────────┼──────────────┐
+   Opentodo.app     Web (React)     iOS App
+   本地镜像 + 同步    直连服务端      本地镜像 + 语音 + 同步
+        │
+        ├── app 专属插件（~/.config/opentodo/opencode/）
+        └── (可选) opentodo-mcp
+                       │ opencode V2 运行时
+               App 自起的 `opencode serve`
+          (XDG_CONFIG_HOME + location 隔离)
+
+   同步语义：同一条目按 updatedAt 取新；删除写墓碑且永远优先；合并由服务端单点完成。
+   Mac / iOS 离线可继续记录，联网后自动合并。
 ```
 
 > 对话后端对接 **opencode V2 HTTP API**：所有路由在 `/api/*` 下并用 Basic 认证(用户名 `opencode`,密码是自起的 serve 打印到 stdout 的 `server password …`)。V2 的 server API 与 V1 **不兼容**——插件要用 `@opencode/plugin` 的 `Plugin.define`,插件工具经 Code Mode 的 `execute` 调用,所以 agent 权限必须放行 `execute`(见 `KeychainStore.buildOverlayData`)。
 
-- **数据层**：`~/.config/opentodo/todos.json`（`OPENTODO_FILE` 可覆盖），schema 见 `shared/schema.md`。
+- **数据层（v3）**：服务端持有唯一真相源；Mac 本地文件 `/Users/you/.config/opentodo/todos.json` 作为镜像（插件 / MCP 仍读它），iOS 用应用沙盒内镜像。schema 见 `shared/schema.md`。删除写墓碑，项目改名写 `listRenames`。
 - **工具层（关键）**：`plugin/opentodo.js` 是 opencode **V2** 插件（`@opencode/plugin` + `Plugin.define`），注册 `opentodo_*` 工具（增删改查/归档/项目）并往系统提示注入当前项目与待办摘要。它运行在 **opencode 自带的运行时**里，所以**不需要 node、不需要独立的 MCP 进程**。
 - **App**：`app/`，SwiftUI + AppKit `NSPanel`。菜单栏常驻 + 可拖浮球 + 面板（**左侧项目栏** + 待办列表 + 对话）。对话后端是 App 自己拉起的 `opencode serve`。
 - **MCP（可选）**：`mcp/` 是一个独立的 stdio MCP server，功能与插件一致，供其它 MCP 客户端或开发使用；App 本身不依赖它。
+
+## iOS
+
+原生 SwiftUI 版：待办 / 项目 / 四段状态 / 拖拽 / 左滑操作 / **语音快速记录** / AI 对话，全部走同一套同步协议。
+
+```bash
+cd ios
+xcodegen generate            # 已装 XcodeGen；或直接用已生成的 Opentodo.xcodeproj
+open Opentodo.xcodeproj
+```
+
+- Xcode 里 **Signing & Capabilities** 选择你的 Personal Team（免费账号即可），设备开启开发者模式后直接 Run。
+- 免费账号的 App **7 天过期**，到期重跑一次 Xcode；想长期免重签可上 TestFlight（需 $99/年）。
+- 首次打开 → 设置 → 填服务器地址 + 站长口令 → 配对。之后所有请求用设备令牌（存 Keychain）。
+- 语音用系统 `SFSpeechRecognizer`（中文），优先设备端模型，失败自动回落在线识别；识别结果交给本地意图解析，明确动作（完成/删除/归档）直接执行，其余默认记成待办。
+- AI 对话调用服务端 `/api/chat`，手机上不保存模型 API Key。详见 `ios/README.md`。
+
+## 三端同步怎么开
+
+1. 把 Web 服务部署到带 HTTPS 的域名（Docker 镜像见 `web/`）；**升级前先备份线上 `todos.json`**。
+2. 浏览器打开 `https://你的域名/?owner=<站长口令>` 认领站长身份（口令在服务端 `data/owner.token`，或由 `OPENTODO_OWNER_TOKEN` 指定）。
+3. Mac：右键浮球 → 设置 → **多端同步** → 填服务器地址 + 站长口令 → 配对并开始同步。
+4. iOS：设置 → **同步** → 同样填地址 + 口令 → 配对。
+5. 首次同步会把 Mac 本地、Web 云端两边的历史数据**合并**（不是覆盖）；完全相同内容的重复项会保留，需要手动清理。
+
+之后：Mac 的本地改动（包括 opencode 插件直接改文件）会在 2 秒防抖后推送；Web 改写由服务端即时生效；iOS 在启动 / 回前台 / 修改后同步。断网时三端都能继续记录，联网自动合并。
 
 ## 安装 / 运行
 
@@ -102,18 +138,22 @@ open dist/Opentodo.app          # 或把 dist/Opentodo.zip 拷到任何机器解
 
 ```
 plugin/     opencode 插件：提供 opentodo_* 工具 + 注入上下文（App 用这个）
-app/        SwiftUI 桌面 App（浮球 + 左侧项目栏面板 + 对话）
-mcp/        独立 stdio MCP server（可选，供其它客户端/开发）
-shared/     数据契约与示例
+app/        SwiftUI 桌面 App（浮球 + 左侧项目栏面板 + 对话 + 同步）
+ios/        SwiftUI iOS App（待办 + 语音 + AI 对话 + 同步）
+shared/     数据契约与示例；shared/swift/OpentodoCore 为 Mac/iOS 共用模型与同步客户端
+mcp/        独立 stdio MCP server（可选，供其它客户端/开发）+ merge.js 合并引擎
+web/        Web 版（服务端 API + React 前端 + 设备配对 + /api/sync）
 scripts/    build-app.sh / install.sh（清理）/ setup-signing.sh
 ```
 
 ## 状态
 
-- ✅ 数据契约 v2（项目/归档/彻底删除）
+- ✅ 数据契约 v3（项目/归档/彻底删除 + 跨端墓碑/改名元数据）
 - ✅ 插件化工具（无 node / 无独立 MCP，运行在 opencode 运行时）
 - ✅ 与全局 opencode 隔离（TUI 只有 build/plan，无 opentodo 模式/工具）
 - ✅ App 自包含：bundle 内置插件，运行时 provision 专属配置，解压即用
 - ✅ 左侧项目栏、点击就地编辑、拖拽排序（插入横杠）、拖到项目
 - ✅ 数据防丢（内存重建 + 备份 + 损坏拒写）、自检通过
-- ⏳ 签名/公证打磨（当前用稳定自签名/Apple Development，未公证）
+- ✅ 三端同步：服务端合并（条目 LWW + 删除墓碑 + 项目改名）、Mac/iOS 离线缓存
+- ✅ iOS：待办管理 + 中文语音快速记录 + AI 对话（复用服务端模型）
+- ⏳ 签名/公证打磨（Mac 当前用稳定自签名/Apple Development，未公证）
