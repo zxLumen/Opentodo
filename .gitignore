@@ -24,3 +24,8 @@ release-assets/
 *.mp4
 *.zip
 *.dmg
+
+# iOS 真机部署 / 续签
+ios/.build/
+ios/DerivedData/
+ios/scripts/wifi.local.sh
