@@ -153,29 +153,46 @@ final class ChatBackend: ObservableObject {
     private var catalogCache: (storedAt: Date, catalog: [ProviderInfo])?
 
     /// 拉取服务商与模型目录（带 5 分钟内存缓存）。返回全部服务商；`connected` 标记可用的。
-    func fetchCatalog() async -> [ProviderInfo] {
-        if let cache = catalogCache,
+    /// `force` 为 true 时跳过缓存（设置页“刷新模型目录”用）。
+    func fetchCatalog(force: Bool = false) async -> [ProviderInfo] {
+        if !force, let cache = catalogCache,
            Date().timeIntervalSince(cache.storedAt) < 300 {
             return cache.catalog
         }
         do { try await ensureServer() } catch { return [] }
 
+        // V2 的 provider/model 目录必须带 location[directory]，
+        // 否则 opencode 返回 {"data":[]}（与 hasOpentodoAgent 的调用方式一致）。
+        let locationQuery = ["location[directory]": appConfigDir().path]
+
+        // serve 刚启动时 provider/model 注册表可能还没就绪（首次请求返回空）。
+        // 这里短重试几次，避免把空目录缓存 5 分钟、用户只能等或重启。
+        var plist: [[String: Any]] = []
+        var mlist: [[String: Any]] = []
+        for attempt in 0..<5 {
+            if let (pdata, _) = try? await request("api/provider", method: "GET", query: locationQuery),
+               let pobj = try? JSONSerialization.jsonObject(with: pdata) as? [String: Any],
+               let list = pobj["data"] as? [[String: Any]] {
+                plist = list
+            }
+            if let (mdata, _) = try? await request("api/model", method: "GET", query: locationQuery),
+               let mobj = try? JSONSerialization.jsonObject(with: mdata) as? [String: Any],
+               let list = mobj["data"] as? [[String: Any]] {
+                mlist = list
+            }
+            if !mlist.isEmpty { break }
+            if attempt < 4 { try? await Task.sleep(nanoseconds: 400_000_000) }
+        }
+        guard !mlist.isEmpty else { return [] }
+
         // providers: id -> (name, activation)
         var nameByID: [String: String] = [:]
         var activeByID: [String: Bool] = [:]
-        if let (pdata, _) = try? await request("api/provider", method: "GET"),
-           let pobj = try? JSONSerialization.jsonObject(with: pdata) as? [String: Any],
-           let plist = pobj["data"] as? [[String: Any]] {
-            for p in plist {
-                guard let pid = p["id"] as? String else { continue }
-                nameByID[pid] = p["name"] as? String ?? pid
-                activeByID[pid] = (p["activation"] as? String) != "disabled"
-            }
+        for p in plist {
+            guard let pid = p["id"] as? String else { continue }
+            nameByID[pid] = p["name"] as? String ?? pid
+            activeByID[pid] = (p["activation"] as? String) != "disabled"
         }
-
-        guard let (mdata, _) = try? await request("api/model", method: "GET"),
-              let mobj = try? JSONSerialization.jsonObject(with: mdata) as? [String: Any],
-              let mlist = mobj["data"] as? [[String: Any]] else { return [] }
 
         var byProvider: [String: [ModelOption]] = [:]
         for m in mlist {
@@ -211,7 +228,11 @@ final class ChatBackend: ObservableObject {
             if a.connected != b.connected { return a.connected && !b.connected }
             return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
         }
-        catalogCache = (Date(), sorted)
+        if !sorted.isEmpty {
+            catalogCache = (Date(), sorted)
+        } else {
+            catalogCache = nil
+        }
         return sorted
     }
 
