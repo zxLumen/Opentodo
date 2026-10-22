@@ -29,20 +29,22 @@ struct TodoListView: View {
                     ForEach(model.sections) { section in
                         Section {
                             ForEach(section.items) { item in
-                                TodoRow(item: item) { editing = item }
-                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                        actions(for: item)
-                                    }
+                                TodoDropRow(
+                                    item: item,
+                                    group: group(for: section),
+                                    draggable: section.title != "已取消"
+                                ) { editing = item }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    actions(for: item)
+                                }
                             }
-                            .onMove { model.move(section: section, from: $0, to: $1) }
                         } header: {
-                            HStack {
-                                Text(section.title)
-                                Spacer()
-                                Text("\(section.items.count)")
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
+                            DropSectionHeader(
+                                title: section.title,
+                                count: section.items.count,
+                                group: group(for: section),
+                                enabled: section.title != "已取消"
+                            )
                         }
                     }
                 }
@@ -56,7 +58,6 @@ struct TodoListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                EditButton()
                 SyncBadge()
                 Button {
                     showChat = true
@@ -174,6 +175,10 @@ struct TodoListView: View {
         .background(.bar)
     }
 
+    private func group(for section: TodoSection) -> String? {
+        section.title == "未分组" ? nil : section.title
+    }
+
     private func addFromField() {
         let text = newText
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -253,6 +258,76 @@ struct TodoListView: View {
                 EmptyView()
             }
         }
+    }
+}
+
+struct TodoDropRow: View {
+    @EnvironmentObject private var model: AppModel
+    let item: TodoItem
+    let group: String?
+    let draggable: Bool
+    let onEdit: () -> Void
+
+    @State private var targeted = false
+
+    var body: some View {
+        if draggable {
+            row
+                .draggable(item.id) { preview }
+                .dropDestination(for: String.self) { ids, _ in
+                    guard let id = ids.first, id != item.id else { return false }
+                    return model.moveToGroup(id: id, to: group, beforeId: item.id)
+                } isTargeted: { targeted = $0 }
+                .listRowBackground(targeted ? Color.accentColor.opacity(0.10) : Color.clear)
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
+        TodoRow(item: item, onEdit: onEdit)
+    }
+
+    private var preview: some View {
+        Text(item.content)
+            .font(.body)
+            .lineLimit(2)
+            .padding(10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+struct DropSectionHeader: View {
+    @EnvironmentObject private var model: AppModel
+    let title: String
+    let count: Int
+    let group: String?
+    let enabled: Bool
+
+    @State private var targeted = false
+
+    var body: some View {
+        if enabled {
+            header
+                .dropDestination(for: String.self) { ids, _ in
+                    guard let id = ids.first else { return false }
+                    return model.moveToGroup(id: id, to: group, beforeId: nil)
+                } isTargeted: { targeted = $0 }
+                .background(targeted ? Color.accentColor.opacity(0.10) : Color.clear)
+        } else {
+            header
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text("\(count)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
     }
 }
 

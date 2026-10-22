@@ -195,13 +195,15 @@ final class AppModel: ObservableObject {
         afterLocalChange()
     }
 
-    func move(section: TodoSection, from source: IndexSet, to destination: Int) {
-        // 「已取消」是跨项目的混合分组，重排没有语义。
-        guard section.title != "已取消" else { return }
-        var ids = section.items.map(\.id)
-        ids.move(fromOffsets: source, toOffset: destination)
-        file = local.reorder(orderedIds: ids)
+    /// 同项目内拖到另一个分组（`group == nil` = 未分组）。
+    /// `beforeId == nil` 表示放到目标分组末尾。
+    @discardableResult
+    func moveToGroup(id: String, to group: String?, beforeId: String?) -> Bool {
+        guard let item = file.items.first(where: { $0.id == id }),
+              item.listName == currentList else { return false }
+        file = local.moveToGroup(id: id, group: group, beforeId: beforeId)
         afterLocalChange()
+        return true
     }
 
     func archiveCompleted() {

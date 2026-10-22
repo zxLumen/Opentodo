@@ -267,6 +267,54 @@ final class LocalStore {
         }
     }
 
+    /// 在同一个「项目(list)」内跨分组拖拽：把条目移到 `group`（nil = 未分组），
+    /// 插到 `beforeId` 之前（nil = 该分组末尾），并把新旧分组的 order 重排为 1..n。
+    /// 语义对齐 Web 的 ops.move / Mac 的 TodoStore.move。
+    func moveToGroup(id: String, group: String?, beforeId: String?) -> TodoFile {
+        let targetGroup = (group?.isEmpty ?? true) ? nil : group
+        let now = Self.iso()
+        return mutate { file in
+            guard let movingIndex = file.items.firstIndex(where: { $0.id == id }) else { return }
+            let list = file.items[movingIndex].listName
+            let oldGroup = file.items[movingIndex].project
+            guard oldGroup != targetGroup || beforeId != nil else { return }
+
+            file.items[movingIndex].project = targetGroup
+            file.items[movingIndex].updatedAt = now
+
+            func sortedGroup(_ project: String?) -> [TodoItem] {
+                file.items
+                    .filter { $0.listName == list && $0.project == project && $0.id != id }
+                    .sorted(by: Self.byOrder)
+            }
+
+            var target = sortedGroup(targetGroup)
+            var insertAt = target.count
+            if let beforeId, let at = target.firstIndex(where: { $0.id == beforeId }) {
+                insertAt = at
+            }
+            target.insert(file.items[movingIndex], at: insertAt)
+            for (n, item) in target.enumerated() {
+                if let idx = file.items.firstIndex(where: { $0.id == item.id }) {
+                    file.items[idx].order = Double(n + 1)
+                }
+            }
+
+            if oldGroup != targetGroup {
+                for (n, item) in sortedGroup(oldGroup).enumerated() {
+                    if let idx = file.items.firstIndex(where: { $0.id == item.id }) {
+                        file.items[idx].order = Double(n + 1)
+                    }
+                }
+            }
+        }
+    }
+
+    private static func byOrder(_ a: TodoItem, _ b: TodoItem) -> Bool {
+        if a.order != b.order { return a.order < b.order }
+        return (a.createdAt ?? "") < (b.createdAt ?? "")
+    }
+
     // MARK: - Helpers
 
     private func backup() {

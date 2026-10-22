@@ -6,13 +6,30 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
+    /// iPhone 上 NavigationSplitView 折叠时，返回后必须清掉选中值，
+    /// 否则同一项目会保持灰色且再次点击不会触发导航。
+    @State private var selectedList: String?
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(showSettings: $showSettings)
+            SidebarView(selectedList: $selectedList, showSettings: $showSettings)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
         } detail: {
             TodoListView()
+                .onDisappear { selectedList = nil }
+        }
+        .onChange(of: selectedList) { _, newValue in
+            if let newValue { model.selectList(newValue) }
+        }
+        .onChange(of: model.lists) { _, lists in
+            // 云端同步删除/改名了当前项目时，不要留下一个不存在的选中值。
+            if let selectedList, !lists.contains(selectedList) {
+                self.selectedList = nil
+            }
+        }
+        .onAppear {
+            // 首次进入保留原来的行为：直接打开上次的项目；返回后由 onDisappear 清空。
+            if selectedList == nil { selectedList = model.currentList }
         }
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
@@ -39,6 +56,7 @@ struct RootView: View {
 
 struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
+    @Binding var selectedList: String?
     @Binding var showSettings: Bool
 
     @State private var showNewList = false
@@ -46,12 +64,10 @@ struct SidebarView: View {
     @State private var renaming: String?
     @State private var renameText = ""
     @State private var deleting: String?
+    @State private var showChat = false
 
     var body: some View {
-        List(selection: Binding(
-            get: { model.currentList },
-            set: { if let value = $0 { model.selectList(value) } }
-        )) {
+        List(selection: $selectedList) {
             Section("项目") {
                 ForEach(model.lists, id: \.self) { name in
                     HStack(spacing: 8) {
@@ -87,6 +103,11 @@ struct SidebarView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 SyncBadge()
+                Button {
+                    showChat = true
+                } label: {
+                    Image(systemName: "sparkles")
+                }
                 Button {
                     newListName = ""
                     showNewList = true
@@ -127,6 +148,10 @@ struct SidebarView: View {
             }
         } message: {
             Text("「\(deleting ?? "")」下的待办会一并彻底删除，不可恢复。")
+        }
+        .sheet(isPresented: $showChat) {
+            ChatView()
+                .environmentObject(model)
         }
     }
 }
