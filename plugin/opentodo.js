@@ -36,7 +36,17 @@ function nowIso() {
 }
 
 function emptyData() {
-  return { version: 2, revision: 0, updatedAt: nowIso(), items: [], lists: [] };
+  return {
+    version: 3,
+    revision: 0,
+    updatedAt: nowIso(),
+    items: [],
+    lists: [],
+    tombstones: [],
+    listTombstones: [],
+    listRenames: [],
+    listsUpdatedAt: nowIso(),
+  };
 }
 
 function resolveFile() {
@@ -65,11 +75,84 @@ function normalizeItem(raw = {}) {
   };
 }
 
+function stamp(value) {
+  const t = Date.parse(String(value ?? ""));
+  return Number.isFinite(t) ? t : 0;
+}
+
+function normalizeTombstones(raw) {
+  const map = new Map();
+  if (Array.isArray(raw)) {
+    for (const t of raw) {
+      const id = typeof t?.id === "string" ? t.id : "";
+      if (!id) continue;
+      const deletedAt = String(t.deletedAt || "");
+      const prev = map.get(id);
+      if (!prev || stamp(deletedAt) > stamp(prev.deletedAt)) map.set(id, { id, deletedAt });
+    }
+  }
+  return [...map.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+function normalizeListTombstones(raw) {
+  const map = new Map();
+  if (Array.isArray(raw)) {
+    for (const t of raw) {
+      const name = typeof t?.name === "string" ? t.name.trim() : "";
+      if (!name) continue;
+      const deletedAt = String(t.deletedAt || "");
+      const prev = map.get(name);
+      if (!prev || stamp(deletedAt) > stamp(prev.deletedAt)) map.set(name, { name, deletedAt });
+    }
+  }
+  return [...map.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+function normalizeRenames(raw) {
+  const map = new Map();
+  if (Array.isArray(raw)) {
+    for (const r of raw) {
+      const from = typeof r?.from === "string" ? r.from.trim() : "";
+      const to = typeof r?.to === "string" ? r.to.trim() : "";
+      if (!from || !to || from === to) continue;
+      const at = String(r.at || "");
+      const prev = map.get(from);
+      if (!prev || stamp(at) > stamp(prev.at)) map.set(from, { from, to, at });
+    }
+  }
+  return [...map.values()].sort((a, b) => stamp(a.at) - stamp(b.at));
+}
+
 function normalizeData(raw = {}) {
-  const items = Array.isArray(raw.items) ? raw.items.map(normalizeItem) : [];
-  const lists = Array.isArray(raw.lists)
-    ? [...new Set(raw.lists.map((l) => String(l)).filter(Boolean))]
+  const tombstones = normalizeTombstones(raw.tombstones);
+  const listTombstones = normalizeListTombstones(raw.listTombstones);
+  const listRenames = normalizeRenames(raw.listRenames);
+  const renameSteps = [...listRenames].sort((a, b) => stamp(a.at) - stamp(b.at));
+  const applyRename = (name) => {
+    let current = name;
+    for (const r of renameSteps) {
+      if (r.from === current) current = r.to;
+    }
+    return current;
+  };
+  const deletedItems = new Set(tombstones.map((t) => t.id));
+  const deletedLists = new Set(listTombstones.map((t) => t.name));
+
+  const items = [];
+  if (Array.isArray(raw.items)) {
+    for (const rawItem of raw.items) {
+      const item = normalizeItem(rawItem);
+      item.list = applyRename(item.list);
+      if (deletedItems.has(item.id) || deletedLists.has(item.list)) continue;
+      items.push(item);
+    }
+  }
+
+  let lists = Array.isArray(raw.lists)
+    ? [...new Set(raw.lists.map((l) => applyRename(String(l))).filter(Boolean))]
     : [];
+  lists = lists.filter((name) => !deletedLists.has(name));
+
   const seen = new Set(lists);
   // 与 app 一致：注册表为空时预置默认项目「收件箱」。
   if (lists.length === 0) {
@@ -83,12 +166,55 @@ function normalizeData(raw = {}) {
     }
   }
   return {
-    version: 2,
+    version: 3,
     revision: Number.isFinite(Number(raw.revision)) ? Number(raw.revision) : 0,
     updatedAt: raw.updatedAt || nowIso(),
     items,
     lists,
+    tombstones,
+    listTombstones,
+    listRenames,
+    listsUpdatedAt: raw.listsUpdatedAt || "",
   };
+}
+
+function addItemTombstone(data, id, deletedAt = nowIso()) {
+  if (!id) return;
+  if (!Array.isArray(data.tombstones)) data.tombstones = [];
+  const prev = data.tombstones.find((t) => t.id === id);
+  if (!prev) data.tombstones.push({ id, deletedAt });
+  else if (stamp(deletedAt) > stamp(prev.deletedAt)) prev.deletedAt = deletedAt;
+}
+
+function addListTombstone(data, name, deletedAt = nowIso()) {
+  const trimmed = String(name ?? "").trim();
+  if (!trimmed) return;
+  if (!Array.isArray(data.listTombstones)) data.listTombstones = [];
+  const prev = data.listTombstones.find((t) => t.name === trimmed);
+  if (!prev) data.listTombstones.push({ name: trimmed, deletedAt });
+  else if (stamp(deletedAt) > stamp(prev.deletedAt)) prev.deletedAt = deletedAt;
+  data.listsUpdatedAt = deletedAt;
+}
+
+function removeListTombstone(data, name) {
+  if (!Array.isArray(data.listTombstones)) return;
+  data.listTombstones = data.listTombstones.filter((t) => t.name !== name);
+}
+
+function recordListRename(data, from, to, at = nowIso()) {
+  if (!from || !to || from === to) return;
+  if (!Array.isArray(data.listRenames)) data.listRenames = [];
+  data.listRenames = data.listRenames.filter((r) => r.from !== from);
+  data.listRenames.push({ from, to, at });
+  data.listsUpdatedAt = at;
+}
+
+function ensureList(data, name) {
+  if (!name) return;
+  const revived = (data.listTombstones || []).some((t) => t.name === name);
+  removeListTombstone(data, name);
+  if (!data.lists.includes(name)) data.lists.push(name);
+  if (revived) data.listRenames = (data.listRenames || []).filter((r) => r.from !== name && r.to !== name);
 }
 
 function sleepSync(ms) {
@@ -343,7 +469,7 @@ const TOOLS = [
             order: nextOrder(d, project ?? null, normList(list)),
           });
           d.items.push(item);
-          if (item.list && !d.lists.includes(item.list)) d.lists.push(item.list);
+          ensureList(d, item.list);
           return item;
         }, FILE);
         return `added ${result.id}: ${result.content}\n\n${formatItems(data.items)}`;
@@ -380,7 +506,7 @@ const TOOLS = [
           if (project !== undefined) item.project = project === "" ? null : project;
           if (list !== undefined) {
             item.list = normList(list);
-            if (item.list && !d.lists.includes(item.list)) d.lists.push(item.list);
+            ensureList(d, item.list);
           }
           if (order !== undefined) item.order = order;
           if (archived !== undefined) {
@@ -425,6 +551,7 @@ const TOOLS = [
         const { data, result } = update((d) => {
           const idx = d.items.findIndex((it) => it.id === id);
           if (idx === -1) throw new Error(`no item with id ${id}`);
+          addItemTombstone(d, id);
           const [removed] = d.items.splice(idx, 1);
           return removed;
         }, FILE);
@@ -462,8 +589,9 @@ const TOOLS = [
           const before = d.items.filter(inScope).length;
           d.items = d.items.filter((it) => {
             if (!inScope(it)) return true;
-            if (scope === "archived") return !it.archivedAt;
-            return !!it.archivedAt; // 'all': keep archive, drop everything else
+            const keep = scope === "archived" ? !it.archivedAt : !!it.archivedAt;
+            if (!keep) addItemTombstone(d, it.id);
+            return keep; // 'all': keep archive, drop everything else
           });
           return before - d.items.filter(inScope).length;
         }, FILE);
@@ -482,7 +610,8 @@ const TOOLS = [
         const trimmed = String(name || "").trim();
         if (!trimmed) throw new Error("project name empty");
         const { data } = update((d) => {
-          if (!d.lists.includes(trimmed)) d.lists.push(trimmed);
+          ensureList(d, trimmed);
+          d.listsUpdatedAt = nowIso();
           return trimmed;
         }, FILE);
         return `project (created): ${trimmed}\n\nprojects: ${data.lists.map((p) => `"${p}"`).join(", ") || "(none)"}`;
@@ -508,8 +637,17 @@ const TOOLS = [
         update((d) => {
           if (!d.lists.includes(oldN)) throw new Error(`no project "${oldN}"`);
           if (d.lists.includes(newN)) throw new Error(`project exists: ${newN}`);
+          const at = nowIso();
           d.lists = d.lists.map((p) => (p === oldN ? newN : p));
-          for (const it of d.items) if (it.list === oldN) it.list = newN;
+          for (const it of d.items) {
+            if (it.list === oldN) {
+              it.list = newN;
+              it.updatedAt = at;
+            }
+          }
+          recordListRename(d, oldN, newN, at);
+          addListTombstone(d, oldN, at);
+          removeListTombstone(d, newN);
           return newN;
         }, FILE);
         return `renamed ${oldN} -> ${newN}`;
@@ -530,7 +668,12 @@ const TOOLS = [
           if (idx === -1) throw new Error(`no project "${trimmed}"`);
           d.lists.splice(idx, 1);
           const before = d.items.length;
+          for (const it of d.items) {
+            if (it.list === trimmed) addItemTombstone(d, it.id);
+          }
           d.items = d.items.filter((it) => it.list !== trimmed);
+          d.listRenames = (d.listRenames || []).filter((r) => r.from !== trimmed && r.to !== trimmed);
+          addListTombstone(d, trimmed);
           return before - d.items.length;
         }, FILE);
         return `removed project "${trimmed}", ${result} item(s) deleted`;

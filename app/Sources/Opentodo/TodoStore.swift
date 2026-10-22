@@ -1,4 +1,5 @@
 import Foundation
+import OpentodoCore
 
 /// Read/write access to the shared Opentodo JSON file.
 /// Uses an exclusive mkdir lock + atomic rename so it can coexist with the
@@ -59,12 +60,17 @@ final class TodoStore: ObservableObject {
             return
         }
         guard var file = try? JSONDecoder().decode(TodoFile.self, from: data) else { return }
+        file = TodoNormalize.normalize(file)
         Self.normalize(&file)
         if force || !hasLoaded || file.revision != revision {
             items = file.items
             lists = Self.mergedLists(file)
             revision = file.revision
             hasLoaded = true
+            // 项目可能被另一台设备删除/改名：当前选择失效时回到第一个项目。
+            if let current = currentList, !lists.contains(current) {
+                currentList = lists.first ?? TodoItem.inboxName
+            }
             writeActiveFile()
         }
     }
@@ -95,7 +101,7 @@ final class TodoStore: ObservableObject {
         return merged
     }
 
-    /// True when the file on disk predates schema v2; bumped lazily on the
+    /// True when the file on disk predates the current schema; bumped lazily on the
     /// next write so reads never clobber anything.
     nonisolated private static func migrate(_ file: inout TodoFile) {
         if file.version < TodoFile.currentVersion {
@@ -127,6 +133,11 @@ final class TodoStore: ObservableObject {
                 createdAt: created,
                 completedAt: status == "completed" ? created : nil
             ))
+            let existed = file.lists.contains(target)
+            let revived = file.listTombstones.contains { $0.name == target }
+            file.listTombstones.removeAll { $0.name == target }
+            if revived { file.listRenames.removeAll { $0.from == target || $0.to == target } }
+            if revived || !existed { file.listsUpdatedAt = created }
         }
     }
 
@@ -145,7 +156,9 @@ final class TodoStore: ObservableObject {
     }
 
     func remove(id: String) {
+        guard items.contains(where: { $0.id == id }) else { return }
         persist { file in
+            Self.addTombstone(&file, id: id)
             file.items.removeAll { $0.id == id }
         }
     }
@@ -192,7 +205,9 @@ final class TodoStore: ObservableObject {
 
     /// 彻底删除（仅归档不可恢复；未归档条目请用 remove）。
     func purge(id: String) {
+        guard items.contains(where: { $0.id == id }) else { return }
         persist { file in
+            Self.addTombstone(&file, id: id)
             file.items.removeAll { $0.id == id }
         }
     }
@@ -201,6 +216,9 @@ final class TodoStore: ObservableObject {
     func purgeArchived(allLists: Bool = false) {
         let cl = currentList ?? TodoItem.inboxName
         persist { file in
+            for it in file.items where it.archivedAt != nil && (allLists || it.list == cl) {
+                Self.addTombstone(&file, id: it.id)
+            }
             file.items.removeAll { it in
                 guard it.archivedAt != nil else { return false }
                 return allLists || it.list == cl
@@ -216,21 +234,31 @@ final class TodoStore: ObservableObject {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         persist { file in
-            guard !file.lists.contains(trimmed) else { return }
-            file.lists.append(trimmed)
+            let revived = file.listTombstones.contains { $0.name == trimmed }
+            file.listTombstones.removeAll { $0.name == trimmed }
+            if !file.lists.contains(trimmed) { file.lists.append(trimmed) }
+            if revived { file.listRenames.removeAll { $0.from == trimmed || $0.to == trimmed } }
+            file.listsUpdatedAt = Self.iso()
         }
     }
 
     func renameList(oldName: String, to newName: String) {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, oldName != trimmed else { return }
+        let at = Self.iso()
         persist { file in
             guard let idx = file.lists.firstIndex(of: oldName) else { return }
             if file.lists.contains(trimmed) { return }
             file.lists[idx] = trimmed
             for i in file.items.indices where file.items[i].list == oldName {
                 file.items[i].list = trimmed
+                file.items[i].updatedAt = at
             }
+            file.listRenames.removeAll { $0.from == oldName }
+            file.listRenames.append(TodoListRename(from: oldName, to: trimmed, at: at))
+            Self.addListTombstone(&file, name: oldName, at: at)
+            file.listTombstones.removeAll { $0.name == trimmed }
+            file.listsUpdatedAt = at
         }
         if currentList == oldName { currentList = trimmed }
     }
@@ -239,8 +267,13 @@ final class TodoStore: ObservableObject {
     /// 收件箱是普通项目，行为与其它项目完全一致。
     func deleteList(name: String) {
         persist { file in
+            for it in file.items where it.list == name {
+                Self.addTombstone(&file, id: it.id)
+            }
             file.lists.removeAll { $0 == name }
             file.items.removeAll { $0.list == name }
+            file.listRenames.removeAll { $0.from == name || $0.to == name }
+            Self.addListTombstone(&file, name: name)
         }
         if currentList == name { currentList = lists.first }
     }
@@ -257,6 +290,7 @@ final class TodoStore: ObservableObject {
             for i in fromOffsets where i < toOffset { insertAt -= 1 }
             insertAt = max(0, min(insertAt, file.lists.count))
             file.lists.insert(contentsOf: moving, at: insertAt)
+            file.listsUpdatedAt = Self.iso()
         }
     }
 
@@ -267,11 +301,15 @@ final class TodoStore: ObservableObject {
     }
 
     func reorder(orderedIds: [String]) {
+        let at = Self.iso()
         persist { file in
             var orderById: [String: Double] = [:]
             for (i, id) in orderedIds.enumerated() { orderById[id] = Double(i + 1) }
             for i in file.items.indices {
-                if let o = orderById[file.items[i].id] { file.items[i].order = o }
+                if let o = orderById[file.items[i].id] {
+                    file.items[i].order = o
+                    file.items[i].updatedAt = at
+                }
             }
         }
     }
@@ -287,6 +325,11 @@ final class TodoStore: ObservableObject {
             file.items[idx].list = target
             file.items[idx].order = maxOrder + 1
             file.items[idx].updatedAt = Self.iso()
+            let existed = file.lists.contains(target)
+            let revived = file.listTombstones.contains { $0.name == target }
+            file.listTombstones.removeAll { $0.name == target }
+            if revived { file.listRenames.removeAll { $0.from == target || $0.to == target } }
+            if revived || !existed { file.listsUpdatedAt = Self.iso() }
         }
     }
 
@@ -393,6 +436,7 @@ final class TodoStore: ObservableObject {
         revision = optimistic.revision
         hasLoaded = true
         writeActiveFile()
+        NotificationCenter.default.post(name: .opentodoLocalChanged, object: nil)
 
         // 2) 后台落盘（重新读取以保留其它客户端的改动）
         let fileURL = self.fileURL
@@ -540,4 +584,67 @@ final class TodoStore: ObservableObject {
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f.string(from: Date())
     }
+
+    // MARK: - v3 墓碑 / 多端同步辅助
+
+    nonisolated static func addTombstone(_ file: inout TodoFile, id: String, at: String = iso()) {
+        guard !id.isEmpty else { return }
+        if let i = file.tombstones.firstIndex(where: { $0.id == id }) {
+            if at > file.tombstones[i].deletedAt { file.tombstones[i].deletedAt = at }
+        } else {
+            file.tombstones.append(TodoTombstone(id: id, deletedAt: at))
+        }
+    }
+
+    nonisolated static func addListTombstone(_ file: inout TodoFile, name: String, at: String = iso()) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let i = file.listTombstones.firstIndex(where: { $0.name == trimmed }) {
+            if at > file.listTombstones[i].deletedAt { file.listTombstones[i].deletedAt = at }
+        } else {
+            file.listTombstones.append(TodoListTombstone(name: trimmed, deletedAt: at))
+        }
+        file.listsUpdatedAt = at
+    }
+
+    /// 读取磁盘上的完整状态（含墓碑），用于推送同步。返回原始 Data 以检测并发改动。
+    nonisolated func readLocalSnapshot() -> (file: TodoFile, raw: Data?)? {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: fileURL.path) {
+            return (TodoFile(version: TodoFile.currentVersion, updatedAt: Self.iso()), nil)
+        }
+        guard let data = try? Data(contentsOf: fileURL),
+              let decoded = try? JSONDecoder().decode(TodoFile.self, from: data) else { return nil }
+        return (TodoNormalize.normalize(decoded), data)
+    }
+
+    /// 只有本地自从上次读取后没有变化时才写入合并结果，避免覆盖用户刚做的修改。
+    nonisolated func writeRemoteSnapshot(_ file: TodoFile, expectedRaw: Data?) -> Bool {
+        Self.withLock(fileURL: fileURL) {
+            let fm = FileManager.default
+            var current: Data? = nil
+            if fm.fileExists(atPath: fileURL.path) {
+                current = try? Data(contentsOf: fileURL)
+            }
+            if current != expectedRaw { return false }
+            var out = file
+            out.version = TodoFile.currentVersion
+            out.updatedAt = Self.iso()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+            guard let data = try? encoder.encode(out) else { return false }
+            Self.backup(fileURL: fileURL)
+            do {
+                try Self.writeAtomic(fileURL: fileURL, data: data)
+                return true
+            } catch {
+                return false
+            }
+        }
+    }
+}
+
+extension Notification.Name {
+    /// 本地待办发生变更（用于触发后台同步）。
+    static let opentodoLocalChanged = Notification.Name("opentodo.localChanged")
 }

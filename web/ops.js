@@ -1,9 +1,18 @@
 // 待办操作表:HTTP 的 /api/op 和聊天的工具循环共用同一套语义。
 // 语义对齐桌面 App(TodoStore.swift)与插件(plugin/opentodo.js),保证多端一致。
 
-import { update, newId, findItem, nextOrder, normalizeItem } from '../mcp/lib/store.js'
-
-export const nowIso = () => new Date().toISOString()
+import {
+  update,
+  newId,
+  findItem,
+  nextOrder,
+  normalizeItem,
+  nowIso,
+  addItemTombstone,
+  addListTombstone,
+  removeListTombstone,
+  recordListRename,
+} from '../mcp/lib/store.js'
 
 /** 空/缺省一律归入默认项目「收件箱」 */
 export function normList(value) {
@@ -13,7 +22,12 @@ export function normList(value) {
 }
 
 function ensureList(d, name) {
-  if (name && !d.lists.includes(name)) d.lists.push(name)
+  if (!name) return
+  const revived = (d.listTombstones || []).some((t) => t.name === name)
+  removeListTombstone(d, name)
+  if (!d.lists.includes(name)) d.lists.push(name)
+  // 重新创建同名项目时，清掉旧的改名记录，避免把新条目迁到已删除的旧目标。
+  if (revived) d.listRenames = (d.listRenames || []).filter((r) => r.from !== name && r.to !== name)
 }
 
 /**
@@ -111,9 +125,12 @@ export const ops = {
 
   // 批量:清空归档(彻底删除;对齐 purgeArchived)。allLists=true 时清所有项目。
   purgeArchived(d, { list, allLists }) {
+    const target = normList(list)
     d.items = d.items.filter((it) => {
       if (!it.archivedAt) return true
-      return allLists ? false : it.list !== normList(list)
+      const inScope = allLists || it.list === target
+      if (inScope) addItemTombstone(d, it.id)
+      return !inScope
     })
   },
 
@@ -136,28 +153,40 @@ export const ops = {
       return
     }
     if (scope === 'archived') {
-      d.items = d.items.filter((it) => !(it.archivedAt && inScope(it)))
+      d.items = d.items.filter((it) => {
+        if (it.archivedAt && inScope(it)) {
+          addItemTombstone(d, it.id)
+          return false
+        }
+        return true
+      })
       return
     }
     // 'all':范围内只保留归档
-    d.items = d.items.filter((it) => (inScope(it) ? !!it.archivedAt : true))
+    d.items = d.items.filter((it) => {
+      if (it.archivedAt || !inScope(it)) return true
+      addItemTombstone(d, it.id)
+      return false
+    })
   },
 
   // 彻底删除
   remove(d, { id }) {
     const idx = d.items.findIndex((it) => it.id === id)
     if (idx === -1) throw new Error(`没有 id=${id} 的条目`)
+    addItemTombstone(d, id)
     d.items.splice(idx, 1)
   },
 
   // 重排:按给定 id 顺序写入 order(1..n);只碰传进来的这些,不动别的
   reorder(d, { orderedIds }) {
     if (!Array.isArray(orderedIds)) throw new Error('orderedIds 必须是数组')
+    const now = nowIso()
     orderedIds.forEach((id, i) => {
       const item = findItem(d, id)
       if (item) {
         item.order = i + 1
-        item.updatedAt = nowIso()
+        item.updatedAt = now
       }
     })
   },
@@ -218,12 +247,17 @@ export const ops = {
     d.lists.splice(i, 1)
     const j = before == null ? d.lists.length : d.lists.indexOf(before)
     d.lists.splice(j === -1 ? d.lists.length : j, 0, name)
+    d.listsUpdatedAt = nowIso()
   },
 
   addList(d, { name }) {
     const trimmed = String(name ?? '').trim()
     if (!trimmed) throw new Error('项目名不能为空')
+    const revived = (d.listTombstones || []).some((t) => t.name === trimmed)
+    removeListTombstone(d, trimmed)
     if (!d.lists.includes(trimmed)) d.lists.push(trimmed)
+    if (revived) d.listRenames = (d.listRenames || []).filter((r) => r.from !== trimmed && r.to !== trimmed)
+    d.listsUpdatedAt = nowIso()
   },
 
   renameList(d, { oldName, newName }) {
@@ -233,8 +267,17 @@ export const ops = {
     if (oldN === newN) return
     if (!d.lists.includes(oldN)) throw new Error(`没有项目「${oldN}」`)
     if (d.lists.includes(newN)) throw new Error(`项目已存在:${newN}`)
+    const at = nowIso()
     d.lists = d.lists.map((p) => (p === oldN ? newN : p))
-    for (const it of d.items) if (it.list === oldN) it.list = newN
+    for (const it of d.items) {
+      if (it.list === oldN) {
+        it.list = newN
+        it.updatedAt = at
+      }
+    }
+    recordListRename(d, oldN, newN, at)
+    addListTombstone(d, oldN, at)
+    removeListTombstone(d, newN)
   },
 
   // 删除项目并连带其下所有条目(含归档),不可恢复
@@ -243,7 +286,12 @@ export const ops = {
     const idx = d.lists.indexOf(trimmed)
     if (idx === -1) throw new Error(`没有项目「${trimmed}」`)
     d.lists.splice(idx, 1)
+    for (const it of d.items) {
+      if (it.list === trimmed) addItemTombstone(d, it.id)
+    }
     d.items = d.items.filter((it) => it.list !== trimmed)
+    d.listRenames = (d.listRenames || []).filter((r) => r.from !== trimmed && r.to !== trimmed)
+    addListTombstone(d, trimmed)
   },
 }
 

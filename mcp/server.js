@@ -13,7 +13,20 @@ import {
   nextOrder,
   formatItems,
   normalizeItem,
+  nowIso,
+  addItemTombstone,
+  addListTombstone,
+  removeListTombstone,
+  recordListRename,
 } from "./lib/store.js";
+
+function ensureList(d, name) {
+  if (!name) return;
+  const revived = (d.listTombstones || []).some((t) => t.name === name);
+  removeListTombstone(d, name);
+  if (!d.lists.includes(name)) d.lists.push(name);
+  if (revived) d.listRenames = (d.listRenames || []).filter((r) => r.from !== name && r.to !== name);
+}
 
 const FILE = resolveFile();
 
@@ -117,7 +130,7 @@ server.registerTool(
           order: nextOrder(d, project ?? null, normList(list)),
         });
         d.items.push(item);
-        if (item.list && !d.lists.includes(item.list)) d.lists.push(item.list);
+        ensureList(d, item.list);
         return item;
       }, FILE);
       return ok(`added ${result.id}: ${result.content}\n\n${formatItems(data.items)}`);
@@ -155,7 +168,7 @@ server.registerTool(
         if (list !== undefined) {
           item.list = normList(list);
           // 移动到目标项目时同步注册，避免出现 UI 看不到的"隐形项目"。
-          if (item.list && !d.lists.includes(item.list)) d.lists.push(item.list);
+          ensureList(d, item.list);
         }
         if (order !== undefined) item.order = order;
         if (archived !== undefined) {
@@ -206,6 +219,7 @@ server.registerTool(
       const { data, result } = update((d) => {
         const idx = d.items.findIndex((it) => it.id === id);
         if (idx === -1) throw new Error(`no item with id ${id}`);
+        addItemTombstone(d, id);
         const [removed] = d.items.splice(idx, 1);
         return removed;
       }, FILE);
@@ -245,8 +259,9 @@ server.registerTool(
         const before = d.items.filter(inScope).length;
         d.items = d.items.filter((it) => {
           if (!inScope(it)) return true;
-          if (scope === "archived") return !it.archivedAt;
-          return !!it.archivedAt; // 'all': keep archive, drop everything else
+          const keep = scope === "archived" ? !it.archivedAt : !!it.archivedAt;
+          if (!keep) addItemTombstone(d, it.id);
+          return keep; // 'all': keep archive, drop everything else
         });
         return before - d.items.filter(inScope).length;
       }, FILE);
@@ -271,7 +286,8 @@ server.registerTool(
       const trimmed = String(name || "").trim();
       if (!trimmed) throw new Error("project name empty");
       const { data } = update((d) => {
-        if (!d.lists.includes(trimmed)) d.lists.push(trimmed);
+        ensureList(d, trimmed);
+        d.listsUpdatedAt = nowIso();
         return trimmed;
       }, FILE);
       const exists = data.lists.includes(trimmed);
@@ -298,8 +314,17 @@ server.registerTool(
       const { data } = update((d) => {
         if (!d.lists.includes(oldN)) throw new Error(`no project "${oldN}"`);
         if (d.lists.includes(newN)) throw new Error(`project exists: ${newN}`);
+        const at = nowIso();
         d.lists = d.lists.map((p) => (p === oldN ? newN : p));
-        for (const it of d.items) if (it.list === oldN) it.list = newN;
+        for (const it of d.items) {
+          if (it.list === oldN) {
+            it.list = newN;
+            it.updatedAt = at;
+          }
+        }
+        recordListRename(d, oldN, newN, at);
+        addListTombstone(d, oldN, at);
+        removeListTombstone(d, newN);
         return newN;
       }, FILE);
       return ok(`renamed ${oldN} -> ${newN}`);
@@ -323,7 +348,12 @@ server.registerTool(
         if (idx === -1) throw new Error(`no project "${trimmed}"`);
         d.lists.splice(idx, 1);
         const before = d.items.length;
+        for (const it of d.items) {
+          if (it.list === trimmed) addItemTombstone(d, it.id);
+        }
         d.items = d.items.filter((it) => it.list !== trimmed);
+        d.listRenames = (d.listRenames || []).filter((r) => r.from !== trimmed && r.to !== trimmed);
+        addListTombstone(d, trimmed);
         return before - d.items.length;
       }, FILE);
       return ok(`removed project "${trimmed}", ${result} item(s) deleted`);

@@ -2,7 +2,7 @@
 
 把桌面 App 的前端**迁移成网页版**,做成一个能独立跑、也能被个人站点以「悬浮组件」嵌入的
 面板。数据层**原样复用** `../mcp/lib/store.js` —— 和桌面 App / opencode 插件 / MCP
-读写同一份 `todos.json`(schema v2),所以多端天然共存,不需要迁移脚本。
+读写同一份 `todos.json`(schema v3),所以多端天然共存,不需要迁移脚本。
 
 ## 跑起来
 
@@ -30,6 +30,7 @@ npm start              # → http://localhost:8787
   每个域只留最近 60 条。**单独存**的原因:数据层的 `normalizeData()` 只保留待办字段,未知字段会被丢掉,
   对话塞进 `todos.json` 保不住。
 - **配置**:`<DATA_DIR>/settings.json`、`<DATA_DIR>/chat.key`、`<DATA_DIR>/owner.token`。
+- **已配对设备**:`<DATA_DIR>/devices.json`(只存设备 token 的 SHA-256;Mac / iOS 配对后用它访问)。
 - 待办文件与 App / 插件 / MCP 完全兼容:同一把 mkdir 文件锁、同一条原子 rename、同一个 `revision`。
 
 ## 访客隔离(B 方案)
@@ -64,6 +65,7 @@ web/
 ├─ effort-options.json  生成的「按模型可选的思考强度」(入库)
 ├─ chat.js          聊天引擎:流式 + tools 循环 + 指令协议兜底
 ├─ chatstore.js     对话记录落盘(按数据域,原子写,最近 60 条)
+├─ devices.js       设备令牌配对 / 校验 / 撤销
 ├─ scripts/mock-openai.mjs  本地 mock provider(仅开发验证)
 ├─ scripts/gen-effort-slice.mjs  生成 effort-options.json
 ├─ scripts/selftest.mjs  思考强度/请求体自测(node --test)
@@ -95,8 +97,12 @@ web/
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/state` | `{ data: TodoFile }`(items / lists / revision) |
+| GET | `/api/state` | `{ data: TodoFile }`(items / lists / revision / v3 墓碑)；`?since=<revision>` 未变化返回 304 |
 | POST | `/api/op` | `{ op, ...args }` → `{ data }`,应用一个操作 |
+| POST | `/api/sync` | `{ deviceId, state }` → 服务端合并后的 `{ data, revision, changed }`（Mac / iOS 用） |
+| POST | `/api/devices/pair` | `{ ownerToken, name }` → `{ deviceId, deviceToken }`（只返回一次） |
+| GET | `/api/devices` | 已配对设备列表（站长） |
+| POST | `/api/devices/revoke` | `{ id }` 撤销设备（站长） |
 | GET | `/api/health` | `{ ok, file }` |
 | GET | `/api/chat/state` | 聊天配置(密钥掩码)+ 供应商预设 |
 | GET | `/api/chat/history` | 当前数据域的**对话记录** `{ messages }` |
@@ -110,6 +116,23 @@ web/
 `setArchived` / `remove` / `reorder` / `move`(改分组 + 组内重排)/ `moveToList` / `moveList` /
 `addList` / `renameList` / `deleteList`,以及批量 `archiveCompleted` / `restoreArchived` /
 `purgeArchived`(按 `list` 作用域)。
+
+## 多端同步(v3)
+
+服务端是唯一真相源。Mac / iOS 各自保留一份本地镜像，联网时把**完整状态**推到
+`POST /api/sync`，服务端在文件锁里执行 `mcp/lib/merge.js`：
+
+- 条目按 `id` 并集；同一条目 `updatedAt` 更新的赢；时间相同服务端赢。
+- 删除写墓碑（`tombstones` / `listTombstones`）且**永远优先**，旧设备不会把删除的条目推回来。
+- 项目改名写 `listRenames`，旧名下的并发修改会迁到新名。
+- 项目顺序取 `listsUpdatedAt` 更新的一方。
+- 合并后按 `(list, project)` 重新编号 `order`，不改 `updatedAt`（避免同步回环）。
+
+数据量小（个人使用通常几十 KB），传全量比做操作队列更简单、更抗丢包；同步接口幂等，
+重试没有副作用。客户端只在「自读取后本地文件没变」时才写回合并结果，避免覆盖用户刚做的修改。
+
+鉴权：浏览器仍可用站长 cookie；Mac / iOS 用 `POST /api/devices/pair` 换长期设备令牌
+（`Authorization: Bearer …`，存各自钥匙串，可在设置里撤销）。
 
 ## 对话 / 快速模式 / LLM
 

@@ -12,8 +12,10 @@
 //   - 聊天配置 / 密钥、以及 LLM 对话**仅站长可用**(访客 403;访客仍可用本地快速模式与手动 UI)。
 //
 // 接口:
-//   GET  /api/state              → { data, owner }
+//   GET  /api/state              → { data, owner }（?since=<revision> 可 304）
 //   POST /api/op   { op, ... }   → { data }
+//   POST /api/sync { deviceId, state } → 合并后的权威状态（Mac / iOS）
+//   POST /api/devices/pair       → 设备令牌（Bearer）
 //   GET  /api/chat/state         → { config(掩码), providers, owner }
 //   POST /api/chat/config|key|models → 仅站长
 //   POST /api/chat               → SSE 流式对话(仅站长)
@@ -25,10 +27,12 @@ import crypto from 'node:crypto'
 import zlib from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 import { read, update, normalizeItem } from '../mcp/lib/store.js'
+import { mergeData, mergeChanged } from '../mcp/lib/merge.js'
 import { ops, runOp } from './ops.js'
 import { chatState, listModels, saveSettings, setApiKey } from './settings.js'
 import { runChat } from './chat.js'
 import { readChat, writeChat } from './chatstore.js'
+import { pairDevice, findDevice, listDevices, revokeDevice, safeEqual } from './devices.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT || 8787)
@@ -166,8 +170,14 @@ function resolveScope(req) {
   const c = parseCookies(req)
   const setCookies = []
   const token = ownerToken()
-  // 站长:① 博客登录态(SSO,推荐)② 直接访问用的 owner token(兜底)
-  const owner = (!!token && c.zx_todo_owner === token) || validBlogAdmin(req)
+  // 设备令牌(配对后 Mac / iOS 用 Bearer,不再携带站长口令)
+  let device = null
+  const auth = String(req.headers.authorization || '')
+  if (auth.startsWith('Bearer ')) {
+    device = findDevice(DATA_DIR, auth.slice(7).trim())
+  }
+  // 站长:① 设备令牌 ② 博客登录态(SSO,推荐) ③ 直接访问用的 owner token(兜底)
+  const owner = !!device || (!!token && c.zx_todo_owner === token) || validBlogAdmin(req)
   let cid = c.zx_todo_cid
   if (!/^[a-f0-9]{16}$/.test(cid || '')) {
     cid = crypto.randomBytes(8).toString('hex')
@@ -180,7 +190,7 @@ function resolveScope(req) {
     owner && !viewing ? OWNER_FILE : path.join(VISITORS_DIR, `${viewing || cid}.json`)
   // 访客首次访问:给一份「使用提示」种子
   if (!owner && !viewing) ensureVisitorSeed(file)
-  return { owner, cid, viewing, file, setCookies }
+  return { owner, device, cid, viewing, file, setCookies }
 }
 
 /** 该请求对应的「数据域」键(对话文件按此命名):站长 `owner`;访客各自的 cid;站长查看时用被查看者的 cid */
@@ -437,11 +447,82 @@ const server = http.createServer(async (req, res) => {
 
     const scope = resolveScope(req)
     if (scope.setCookies.length) res.setHeader('Set-Cookie', scope.setCookies)
+    const ownerOnly = () => send(res, 403, { error: '仅站长可用' })
 
-    if (pathname === '/api/health') return send(res, 200, { ok: true, owner: scope.owner })
+    if (pathname === '/api/health') return send(res, 200, { ok: true, owner: scope.owner, device: scope.device?.name ?? null })
 
     if (pathname === '/api/state' && req.method === 'GET') {
-      return send(res, 200, { data: read(scope.file), owner: scope.owner, viewing: scope.viewing })
+      const data = read(scope.file)
+      // 轻量轮询:revision 没变就 304,连 JSON 都不用传。
+      const since = Number(url.searchParams.get('since'))
+      if (Number.isFinite(since) && since > 0 && since === data.revision) {
+        res.writeHead(304, { 'Cache-Control': 'no-store' })
+        return res.end()
+      }
+      return send(res, 200, { data, owner: scope.owner, viewing: scope.viewing })
+    }
+
+    /* ---------- 多端同步(仅站长 / 设备令牌) ---------- */
+    if (pathname === '/api/devices/pair' && req.method === 'POST') {
+      const body = await readBody(req)
+      const given = typeof body.ownerToken === 'string' ? body.ownerToken : ''
+      if (!safeEqual(given, ownerToken())) return send(res, 403, { error: '站长口令不对' })
+      const name = typeof body.name === 'string' ? body.name : '未命名设备'
+      const device = pairDevice(DATA_DIR, name)
+      return send(res, 200, { ...device, serverTime: new Date().toISOString() })
+    }
+
+    if (pathname === '/api/devices' && req.method === 'GET') {
+      if (!scope.owner) return ownerOnly()
+      return send(res, 200, { devices: listDevices(DATA_DIR) })
+    }
+
+    if (pathname === '/api/devices/revoke' && req.method === 'POST') {
+      if (!scope.owner) return ownerOnly()
+      const body = await readBody(req)
+      const id = typeof body.id === 'string' ? body.id : ''
+      if (!id) return send(res, 400, { error: '缺少设备 id' })
+      if (scope.device?.id === id) return send(res, 400, { error: '不能撤销当前正在使用的设备' })
+      const ok = revokeDevice(DATA_DIR, id)
+      return send(res, ok ? 200 : 404, ok ? { ok: true } : { error: '设备不存在' })
+    }
+
+    if (pathname === '/api/sync' && req.method === 'POST') {
+      if (!scope.owner) return send(res, 403, { error: '仅站长可用' })
+      if (scope.viewing) return send(res, 403, { error: '查看访客时不能同步' })
+      const body = await readBody(req)
+      const state = body?.state
+      if (!state || typeof state !== 'object' || !Array.isArray(state.items)) {
+        return send(res, 400, { error: 'state 必须是完整的 TodoFile' })
+      }
+      if (state.items.length > 20000) {
+        return send(res, 413, { error: '待办数量超过上限' })
+      }
+      let changed = false
+      const { data } = update(
+        (d) => {
+          const merged = mergeData(d, state)
+          if (mergeChanged(d, merged)) {
+            changed = true
+            d.items = merged.items
+            d.lists = merged.lists
+            d.tombstones = merged.tombstones
+            d.listTombstones = merged.listTombstones
+            d.listRenames = merged.listRenames
+            d.listsUpdatedAt = merged.listsUpdatedAt
+            d.version = 3
+          }
+          return merged
+        },
+        scope.file,
+        { onlyIfChanged: true },
+      )
+      return send(res, 200, {
+        data,
+        revision: data.revision,
+        changed,
+        serverTime: new Date().toISOString(),
+      })
     }
 
     if (pathname === '/api/op' && req.method === 'POST') {
@@ -453,7 +534,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---------- 聊天设置(仅站长) ---------- */
-    const ownerOnly = () => send(res, 403, { error: '仅站长可用' })
 
     /* ---------- 访客管理(仅站长) ---------- */
     if (pathname === '/api/visitors' && req.method === 'GET') {

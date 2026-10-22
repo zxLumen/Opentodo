@@ -130,6 +130,48 @@ enum KeychainStore {
             kSecAttrAccount as String: providerID,
         ]
     }
+
+    // MARK: - 多端同步设备令牌
+
+    private static let syncService = "com.opentodo.sync-token"
+
+    private static var syncQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: syncService,
+            kSecAttrAccount as String: "device",
+        ]
+    }
+
+    static func loadSyncToken() -> String? {
+        var q = syncQuery
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func saveSyncToken(_ token: String) {
+        guard !token.isEmpty else {
+            deleteSyncToken()
+            return
+        }
+        let data = Data(token.utf8)
+        if loadSyncToken() != nil {
+            SecItemUpdate(syncQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        } else {
+            var q = syncQuery
+            q[kSecValueData as String] = data
+            q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            SecItemAdd(q as CFDictionary, nil)
+        }
+    }
+
+    static func deleteSyncToken() {
+        SecItemDelete(syncQuery as CFDictionary)
+    }
 }
 
 /// 把手动输入解析为完整的 "provider/model" ID。
@@ -179,6 +221,8 @@ final class AppSettings: ObservableObject {
         static let ballDiameter = "opentodo.ballDiameter"
         static let launchAtLogin = "opentodo.launchAtLogin"
         static let credentialProviders = "opentodo.credentialProviders"
+        static let syncURL = "opentodo.syncURL"
+        static let syncDeviceId = "opentodo.syncDeviceId"
     }
 
     @Published var model: String { didSet { d.set(model, forKey: Keys.model) } }
@@ -190,6 +234,8 @@ final class AppSettings: ObservableObject {
     @Published var ballStyle: BallStyle { didSet { d.set(ballStyle.rawValue, forKey: Keys.ballStyle) } }
     @Published var ballDiameter: Double { didSet { d.set(ballDiameter, forKey: Keys.ballDiameter) } }
     @Published var launchAtLogin: Bool { didSet { applyLaunchAtLogin() } }
+    @Published var syncURL: String { didSet { d.set(syncURL, forKey: Keys.syncURL) } }
+    @Published var syncDeviceId: String { didSet { d.set(syncDeviceId, forKey: Keys.syncDeviceId) } }
 
     init() {
         model = d.string(forKey: Keys.model) ?? "zhipuai/glm-5.3-flash"
@@ -201,6 +247,8 @@ final class AppSettings: ObservableObject {
         ballStyle = BallStyle(rawValue: d.string(forKey: Keys.ballStyle) ?? "") ?? .ringC
         ballDiameter = d.object(forKey: Keys.ballDiameter) as? Double ?? 64
         launchAtLogin = d.object(forKey: Keys.launchAtLogin) as? Bool ?? false
+        syncURL = d.string(forKey: Keys.syncURL) ?? ""
+        syncDeviceId = d.string(forKey: Keys.syncDeviceId) ?? ""
     }
 
     /// "provider/model" split, or nil to follow the global default.
@@ -256,13 +304,13 @@ final class AppSettings: ObservableObject {
 final class SettingsWindowController {
     private var window: NSWindow?
 
-    func show(settings: AppSettings, chat: ChatBackend) {
+    func show(settings: AppSettings, chat: ChatBackend, sync: SyncService) {
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let view = SettingsView(settings: settings, chat: chat)
+        let view = SettingsView(settings: settings, chat: chat, sync: sync)
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 640),
             styleMask: [.titled, .closable],
@@ -282,6 +330,11 @@ final class SettingsWindowController {
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var chat: ChatBackend
+    @ObservedObject var sync: SyncService
+
+    @State private var ownerToken = ""
+    @State private var pairing = false
+    @State private var pairMessage: String?
 
     @State private var providers: [ProviderInfo] = []
     @State private var loading = false
@@ -426,6 +479,51 @@ struct SettingsView: View {
                 }
             }
 
+            Section("多端同步") {
+                TextField("服务器地址（如 https://todo.example.com）", text: $settings.syncURL)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("站长口令（配对后不再保存）", text: $ownerToken)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button(pairing ? "配对中…" : (sync.isConfigured ? "重新配对" : "配对并开始同步")) {
+                        pairing = true
+                        pairMessage = nil
+                        Task {
+                            let error = await sync.pair(serverURL: settings.syncURL, ownerToken: ownerToken)
+                            pairing = false
+                            ownerToken = ""
+                            pairMessage = error ?? "配对成功"
+                        }
+                    }
+                    .disabled(pairing || settings.syncURL.trimmingCharacters(in: .whitespaces).isEmpty || ownerToken.isEmpty)
+                    if sync.isConfigured {
+                        Button("立即同步") { sync.syncNow() }
+                        Button("断开") { sync.disconnect() }
+                    }
+                }
+                if let pairMessage {
+                    Text(pairMessage)
+                        .font(.caption)
+                        .foregroundStyle(pairMessage == "配对成功" ? .green : .red)
+                }
+                HStack {
+                    Text("状态")
+                    Spacer()
+                    Text(syncStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if sync.isConfigured, !settings.syncDeviceId.isEmpty {
+                    Text("设备 ID：\(settings.syncDeviceId)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Text("把 Mac 的本地待办与云端合并：按条目更新时间取新，删除优先。首次同步会合并两边已有数据（重复项保留）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("系统") {
                 Toggle("开机自启", isOn: $settings.launchAtLogin)
                 HStack {
@@ -440,6 +538,24 @@ struct SettingsView: View {
     }
 
     // MARK: - derived state
+
+    private var syncStatusText: String {
+        switch sync.phase {
+        case .disabled:
+            return "未启用"
+        case .syncing:
+            return "同步中…"
+        case .failed(let message):
+            return "失败：\(message)"
+        case .idle:
+            guard let last = sync.lastSyncAt else { return "就绪" }
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "zh_CN")
+            f.timeStyle = .short
+            f.dateStyle = .none
+            return "上次同步 \(f.string(from: last))"
+        }
+    }
 
     private var providerOptions: [ProviderInfo] {
         var list = providers.filter(\.connected)

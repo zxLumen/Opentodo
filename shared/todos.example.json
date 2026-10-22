@@ -1,8 +1,12 @@
 {
-  "version": 2,
+  "version": 3,
   "revision": 1,
   "updatedAt": "2026-09-23T08:00:00.000Z",
-  "lists": ["blog", "work"],
+  "lists": [
+    "收件箱",
+    "blog",
+    "work"
+  ],
   "items": [
     {
       "id": "a1b2c3d4",
@@ -55,6 +59,26 @@
       "createdAt": "2026-09-10T01:00:00.000Z",
       "updatedAt": "2026-09-23T08:00:00.000Z",
       "completedAt": "2026-09-20T12:00:00.000Z"
+    }
+  ],
+  "listsUpdatedAt": "2026-09-23T08:00:00.000Z",
+  "tombstones": [
+    {
+      "id": "deadbeef",
+      "deletedAt": "2026-09-23T08:00:00.000Z"
+    }
+  ],
+  "listTombstones": [
+    {
+      "name": "旧项目",
+      "deletedAt": "2026-09-23T08:00:00.000Z"
+    }
+  ],
+  "listRenames": [
+    {
+      "from": "旧项目",
+      "to": "收件箱",
+      "at": "2026-09-23T08:00:00.000Z"
     }
   ]
 }

@@ -8,11 +8,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = AppSettings.shared
     private let chat = ChatBackend()
     private let ui = UIState()
+    private lazy var sync = SyncService(store: store, settings: settings)
     private var ball: FloatingBallController!
     private var panel: TodoPanelController!
     private var hotkey: Hotkey?
     private var statusItem: NSStatusItem!
     private var ballMoveObserver: NSObjectProtocol?
+    private var syncPollTimer: Timer?
     private let settingsWindow = SettingsWindowController()
     private var cancellables = Set<AnyCancellable>()
 
@@ -20,6 +22,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         store.start()
         chat.prepareEnvironment()
+        sync.start()
+
+        #if DEBUG
+        // 开发/自动化验证用：从启动环境变量自动配对。
+        let env = ProcessInfo.processInfo.environment
+        if !sync.isConfigured,
+           let url = env["OPENTODO_SYNC_URL"],
+           let owner = env["OPENTODO_OWNER_TOKEN"] {
+            Task {
+                if await sync.pair(serverURL: url, ownerToken: owner) == nil {
+                    sync.syncNow()
+                }
+            }
+        }
+        #endif
 
         ball = FloatingBallController(store: store, settings: settings)
         panel = TodoPanelController(
@@ -30,7 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         ball.onClick = { [weak self] in self?.panel.toggle() }
         ball.isPanelOpen = { [weak self] in self?.panel.isVisible ?? false }
-        panel.onVisibilityChanged = { [weak ball] in ball?.refreshEdgeState() }
+        panel.onVisibilityChanged = { [weak ball, weak self] in
+            ball?.refreshEdgeState()
+            guard let self else { return }
+            if self.panel.isVisible {
+                self.sync.syncNow()
+                self.startSyncPolling()
+            } else {
+                self.stopSyncPolling()
+            }
+        }
         ball.setMenu(buildMenu())
         ball.show()
 
@@ -69,14 +95,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        stopSyncPolling()
         chat.shutdown()
+    }
+
+    /// 面板打开期间低频拉取云端变更，让 Web / 手机上的修改能及时出现在 Mac 上。
+    private func startSyncPolling() {
+        guard syncPollTimer == nil else { return }
+        syncPollTimer = Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sync.syncNow() }
+        }
+    }
+
+    private func stopSyncPolling() {
+        syncPollTimer?.invalidate()
+        syncPollTimer = nil
     }
 
     @objc private func togglePanel() { panel.toggle() }
 
     @objc private func openSettings() {
-        settingsWindow.show(settings: settings, chat: chat)
+        settingsWindow.show(settings: settings, chat: chat, sync: sync)
     }
+
+    @objc private func syncNow() { sync.syncNow() }
 
     @objc private func quit() { NSApp.terminate(nil) }
 
@@ -84,11 +126,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         let show = NSMenuItem(title: "显示 / 隐藏待办  (⌃⌥T)", action: #selector(togglePanel), keyEquivalent: "")
         let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        let syncItem = NSMenuItem(title: "立即同步", action: #selector(syncNow), keyEquivalent: "")
         let quitItem = NSMenuItem(title: "退出 Opentodo", action: #selector(quit), keyEquivalent: "q")
         show.target = self
         settingsItem.target = self
+        syncItem.target = self
         quitItem.target = self
         menu.addItem(show)
+        menu.addItem(syncItem)
         menu.addItem(settingsItem)
         menu.addItem(.separator())
         menu.addItem(quitItem)

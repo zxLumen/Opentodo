@@ -11,7 +11,7 @@
     "build": "vite build",
     "start": "node --env-file-if-exists=.env server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test scripts/selftest.mjs",
+    "test": "node --test scripts/selftest.mjs test/*.test.mjs",
     "gen:effort": "node scripts/gen-effort-slice.mjs"
   },
   "dependencies": {

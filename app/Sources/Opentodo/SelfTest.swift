@@ -107,7 +107,7 @@ enum SelfTest {
         check(opt?["apiKey"] as? String == "k1", "overlay writes literal apiKey")
         check(opt?["baseURL"] == nil, "overlay omits empty baseURL")
 
-        // v1 file migrates to v2 on next write, defaults surface on read
+        // v1 file migrates to v3 on next write, defaults surface on read
         let v1File = dir.appendingPathComponent("v1.json")
         try? """
         {"version":1,"revision":3,"updatedAt":"x","items":[{"id":"m1","content":"legacy","status":"completed","priority":"high","project":"cat","order":1,"completedAt":"2026-01-01T00:00:00Z"}]}
@@ -116,10 +116,10 @@ enum SelfTest {
         v1store.currentList = nil
         v1store.start()
         check(v1store.revision == 3, "v1 read keeps revision")
-        check(v1store.items.first?.list == TodoItem.inboxName && v1store.items.first?.archivedAt == nil, "v1 items get v2 default fields")
+        check(v1store.items.first?.list == TodoItem.inboxName && v1store.items.first?.archivedAt == nil, "v1 items get v3 default fields")
         v1store.add(content: "v2item")
         let v1rewritten = try? String(contentsOf: v1File, encoding: .utf8)
-        check(v1rewritten?.contains("\"version\" : 2") == true, "write upgrades file to v2")
+        check(v1rewritten?.contains("\"version\" : 3") == true, "write upgrades file to v3")
 
         // Projects (lists): 收件箱 是默认普通项目；registry / rename / 统一删除
         let p = TodoStore(fileURL: dir.appendingPathComponent("lists.json"))
