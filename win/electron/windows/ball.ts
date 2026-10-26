@@ -245,10 +245,12 @@ export class BallWindow {
   startDrag(): void {
     if (this.dragging) return
     this.dragging = true
+    // Reveal first: if the ball is retracted, its window moves right before
+    // the drag starts, so record the cursor/window origin after that move.
+    this.reveal()
     const cursor = screen.getCursorScreenPoint()
     const b = this.win.getBounds()
     this.dragStart = { x: cursor.x, y: cursor.y, winX: b.x, winY: b.y, moved: false }
-    this.reveal()
     this.dragTimer = setInterval(() => {
       const p = screen.getCursorScreenPoint()
       const dx = p.x - this.dragStart.x
