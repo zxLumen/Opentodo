@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { applyOp, fetchChatHistory, fetchState, saveChatHistory } from './api'
 import { getChatState, streamChat } from './chat'
+import { promptText } from './prompt'
 import { CANCELLED_GROUP, INBOX, UNGROUPED, type Priority, type TodoFile, type TodoItem } from './types'
 import { useProjectDrag, useRowDrag } from './useRowDrag'
 import { useSessionState } from './sessionState'
@@ -619,8 +620,9 @@ export default function App() {
           <button
             className="sidebar-add"
             onClick={() => {
-              const name = window.prompt('新建项目名称')
-              if (name && name.trim()) void run('addList', { name: name.trim() })
+              void promptText('新建项目名称').then((name) => {
+                if (name && name.trim()) void run('addList', { name: name.trim() })
+              })
             }}
           >
             <IconPlus /> 新建项目
@@ -1017,9 +1019,10 @@ function Row(props: {
           <button
             type="button"
             onClick={() => {
-              const n = window.prompt('新分组名称')
-              setGmenu(false)
-              if (n && n.trim()) props.onSetGroup(n.trim())
+              void promptText('新分组名称').then((n) => {
+                setGmenu(false)
+                if (n && n.trim()) props.onSetGroup(n.trim())
+              })
             }}
           >
             ＋新建分组…

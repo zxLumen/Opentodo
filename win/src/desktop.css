@@ -80,3 +80,69 @@ a {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* In-app replacement for window.prompt() (not supported by Electron). */
+.win-prompt-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.48);
+  -webkit-app-region: no-drag;
+}
+
+.win-prompt {
+  width: 300px;
+  padding: 16px;
+  border-radius: 12px;
+  background: #1d2027;
+  border: 1px solid #303645;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  color: #e8eaf0;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.win-prompt-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.win-prompt-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid #303645;
+  background: #12141a;
+  color: #e8eaf0;
+  outline: none;
+}
+
+.win-prompt-input:focus {
+  border-color: #4f8dfd;
+}
+
+.win-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.win-prompt-actions button {
+  border: 1px solid #303645;
+  background: #232833;
+  color: #dfe5f2;
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.win-prompt-actions button.primary {
+  background: #3b6fe0;
+  border-color: #3b6fe0;
+  color: #fff;
+}
