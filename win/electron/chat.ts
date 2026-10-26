@@ -481,8 +481,11 @@ export class ChatBackend {
     const s = settings.get()
     let [providerID, modelID] = (s.model || '').split('/', 2)
     if (!providerID || !modelID) {
-      providerID = defaultProviderID || models[0]?.providerID || 'opencode-go'
-      modelID = defaultModelID || models[0]?.id || ''
+      // Prefer the fast GLM model when the user's opencode has it; fall back
+      // to opencode's own default. (Several free defaults are region-gated.)
+      const preferred = models.find((m) => m.providerID === 'opencode-go' && m.id === 'glm-5.3-flash')
+      providerID = preferred?.providerID || defaultProviderID || models[0]?.providerID || 'opencode-go'
+      modelID = preferred?.id || defaultModelID || models[0]?.id || ''
     }
     const model = models.find((m) => m.providerID === providerID && m.id === modelID)
     const variants = model?.variants ?? []
@@ -543,9 +546,10 @@ export class ChatBackend {
     let [providerID, modelID] = (settings.get().model || '').split('/', 2)
     if (!providerID || !modelID) {
       const c = await this.catalog()
+      const preferred = c.models.find((m) => m.providerID === 'opencode-go' && m.id === 'glm-5.3-flash')
       const first = c.models[0]
-      providerID = c.defaultProviderID || first?.providerID || ''
-      modelID = c.defaultModelID || first?.id || ''
+      providerID = preferred?.providerID || c.defaultProviderID || first?.providerID || ''
+      modelID = preferred?.id || c.defaultModelID || first?.id || ''
       if (!providerID || !modelID) throw new Error('opencode 里没有可用模型，请先在 opencode 中配置服务商')
       settings.set({ model: `${providerID}/${modelID}` })
     }
