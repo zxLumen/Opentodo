@@ -5,18 +5,19 @@ import { BallBounds } from './panel'
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL
 
-type Edge = 'left' | 'right' | null
+type Edge = 'left' | 'right'
 
+/**
+ * Always-visible floating ball, docked to the left or right edge of a display.
+ * It never auto-hides/retracts: the user asked for a permanent edge presence.
+ */
 export class BallWindow {
   readonly win: BrowserWindow
-  private edge: Edge = null
-  private retracted = false
-  private cursorOutSince = 0
+  private edge: Edge = 'right'
   private checkTimer: NodeJS.Timeout | null = null
   private dragTimer: NodeJS.Timeout | null = null
   private dragStart = { x: 0, y: 0, winX: 0, winY: 0, moved: false }
   private dragging = false
-  private revealedAt = Date.now()
   private displayId = screen.getPrimaryDisplay().id
   private onContext: (() => void) | null = null
   private onActiveChange: (() => void) | null = null
@@ -70,6 +71,8 @@ export class BallWindow {
   show(): void {
     this.win.showInactive()
     this.restorePosition()
+    this.win.setAlwaysOnTop(true, 'screen-saver')
+    this.win.moveTop()
   }
 
   hide(): void {
@@ -86,6 +89,7 @@ export class BallWindow {
     let origin: BallOrigin | null = null
     let savedDisplay: Display | null = null
     const primary = screen.getPrimaryDisplay()
+
     for (const d of displays) {
       if (saved[String(d.id)]) {
         savedDisplay = d
@@ -93,6 +97,7 @@ export class BallWindow {
         break
       }
     }
+
     if (origin && savedDisplay) {
       const area = savedDisplay.workArea
       const valid =
@@ -103,32 +108,23 @@ export class BallWindow {
       if (valid) {
         this.displayId = savedDisplay.id
         this.win.setPosition(Math.round(origin.x), Math.round(origin.y), false)
-        this.edge = origin.edge ?? null
+        this.edge = origin.edge === 'left' ? 'left' : 'right'
       } else {
         origin = null
       }
     }
+
     if (!origin) {
       const area = primary.workArea
       const size = this.windowSize()
       this.displayId = primary.id
-      this.win.setPosition(area.x + area.width - size - 8, area.y + Math.round(area.height * 0.3), false)
+      this.win.setPosition(area.x + area.width - size, area.y + Math.round(area.height * 0.3), false)
       this.edge = 'right'
     }
-    this.clampToDisplay()
-    this.retracted = false
-    this.revealedAt = Date.now()
-    this.publishBounds()
-    this.startEdgeWatcher()
-  }
 
-  private clampToDisplay(): void {
-    const b = this.win.getBounds()
-    const area = this.displayFor().workArea
-    const x = Math.min(Math.max(b.x, area.x - b.width + 12), area.x + area.width - 12)
-    const y = Math.min(Math.max(b.y, area.y), area.y + area.height - b.height)
-    if (x !== b.x || y !== b.y) this.win.setPosition(x, y, false)
-    this.publishBounds()
+    // Always finish fully visible and docked to an edge.
+    this.snapToEdge()
+    this.startTopmostWatcher()
   }
 
   private publishBounds(): void {
@@ -136,118 +132,71 @@ export class BallWindow {
     if (this.onActiveChange) this.onActiveChange()
   }
 
-  private saveOrigin(revealed = true): void {
-    if (this.retracted && !revealed) return
+  private saveOrigin(): void {
     const b = this.win.getBounds()
     const saved = { ...settings.get().ballOrigin }
     saved[String(this.displayId)] = { x: b.x, y: b.y, edge: this.edge }
     settings.set({ ballOrigin: saved })
   }
 
+  /** Dock to the nearest left/right edge of the nearest display. */
   private snapToEdge(): void {
     const b = this.win.getBounds()
     const matched = screen.getDisplayMatching(b)
     this.displayId = matched.id
     const area = this.displayFor().workArea
-    const threshold = 70
-    const leftDist = Math.abs(b.x - area.x)
-    const rightDist = Math.abs(area.x + area.width - (b.x + b.width))
-    if (leftDist <= threshold && leftDist <= rightDist) {
-      this.edge = 'left'
-      this.win.setPosition(area.x, b.y, false)
-    } else if (rightDist <= threshold) {
-      this.edge = 'right'
-      this.win.setPosition(area.x + area.width - b.width, b.y, false)
-    } else {
-      this.edge = null
-    }
-    this.clampToDisplay()
+    const center = b.x + b.width / 2
+    this.edge = center < area.x + area.width / 2 ? 'left' : 'right'
+    const x = this.edge === 'left' ? area.x : area.x + area.width - b.width
+    const y = Math.min(Math.max(b.y, area.y), area.y + area.height - b.height)
+    this.win.setPosition(Math.round(x), Math.round(y), false)
+    this.publishBounds()
     this.saveOrigin()
   }
 
-  private reveal(): void {
-    if (!this.retracted) return
+  /** Keep the ball at the edge and fully inside the work area. */
+  private keepDocked(): void {
     const b = this.win.getBounds()
     const area = this.displayFor().workArea
-    if (this.edge === 'left') this.win.setPosition(area.x + 4, b.y, false)
-    else if (this.edge === 'right') this.win.setPosition(area.x + area.width - b.width - 4, b.y, false)
-    this.retracted = false
-    this.revealedAt = Date.now()
-    this.publishBounds()
+    const leftX = area.x
+    const rightX = area.x + area.width - b.width
+    const atEdge = Math.abs(b.x - leftX) <= 1 || Math.abs(b.x - rightX) <= 1
+    const y = Math.min(Math.max(b.y, area.y), area.y + area.height - b.height)
+    if (!atEdge) {
+      this.snapToEdge()
+    } else if (y !== b.y) {
+      this.win.setPosition(b.x, y, false)
+      this.publishBounds()
+      this.saveOrigin()
+    }
   }
 
-  private retract(): void {
-    if (this.retracted || !this.edge) return
-    if (settings.get().pinned) return
-    const b = this.win.getBounds()
-    const area = this.displayFor().workArea
-    if (this.edge === 'left') this.win.setPosition(area.x - b.width + 10, b.y, false)
-    else this.win.setPosition(area.x + area.width - 10, b.y, false)
-    this.retracted = true
-    this.publishBounds()
-  }
-
-  private hotZone(): { x: number; y: number; width: number; height: number } {
-    const b = this.win.getBounds()
-    if (!this.retracted) return { x: b.x, y: b.y, width: b.width, height: b.height }
-    const area = this.displayFor().workArea
-    if (this.edge === 'left') return { x: area.x, y: b.y, width: 16, height: b.height }
-    if (this.edge === 'right') return { x: area.x + area.width - 16, y: b.y, width: 16, height: b.height }
-    return { x: b.x, y: b.y, width: b.width, height: b.height }
-  }
-
-  private startEdgeWatcher(): void {
-    this.stopEdgeWatcher()
+  private startTopmostWatcher(): void {
+    this.stopTopmostWatcher()
     this.checkTimer = setInterval(() => {
+      if (!this.win.isVisible()) return
       if (this.dragging) return
-      // Re-assert topmost frequently: other always-on-top overlays (AI widgets,
-      // game overlays) can otherwise sit above a non-activating ball.
-      if (this.win.isVisible()) {
-        this.win.setAlwaysOnTop(true, 'screen-saver')
-        this.win.moveTop()
-      }
-      const panelOpen = this.isPanelOpen()
-      if (panelOpen) {
-        this.reveal()
-        this.cursorOutSince = 0
-        return
-      }
-      const p = screen.getCursorScreenPoint()
-      const z = this.hotZone()
-      const inside = p.x >= z.x && p.x <= z.x + z.width && p.y >= z.y && p.y <= z.y + z.height
-      if (inside) {
-        this.reveal()
-        this.cursorOutSince = 0
-      } else if (this.retracted) {
-        // stay retracted
-      } else if (this.edge) {
-        if (!this.cursorOutSince) this.cursorOutSince = Date.now()
-        if (Date.now() - this.cursorOutSince > 1500 && Date.now() - this.revealedAt > 5000) this.retract()
-      }
-    }, 350)
+      // Some always-on-top overlays can otherwise sit above a non-activating ball.
+      this.win.setAlwaysOnTop(true, 'screen-saver')
+      this.win.moveTop()
+      this.keepDocked()
+    }, 500)
   }
 
-  private stopEdgeWatcher(): void {
+  private stopTopmostWatcher(): void {
     if (this.checkTimer) clearInterval(this.checkTimer)
     this.checkTimer = null
   }
 
   private stopTimers(): void {
-    this.stopEdgeWatcher()
+    this.stopTopmostWatcher()
     if (this.dragTimer) clearInterval(this.dragTimer)
     this.dragTimer = null
-  }
-
-  private isPanelOpen(): boolean {
-    return PanelVisible.current
   }
 
   startDrag(): void {
     if (this.dragging) return
     this.dragging = true
-    // Reveal first: if the ball is retracted, its window moves right before
-    // the drag starts, so record the cursor/window origin after that move.
-    this.reveal()
     const cursor = screen.getCursorScreenPoint()
     const b = this.win.getBounds()
     this.dragStart = { x: cursor.x, y: cursor.y, winX: b.x, winY: b.y, moved: false }
@@ -265,8 +214,8 @@ export class BallWindow {
     this.dragging = false
     if (this.dragTimer) clearInterval(this.dragTimer)
     this.dragTimer = null
+    // Always re-dock to the nearest edge after a drag.
     this.snapToEdge()
-    this.cursorOutSince = 0
     return this.dragStart.moved
   }
 
@@ -282,19 +231,11 @@ export class BallWindow {
     const size = this.windowSize()
     const b = this.win.getBounds()
     this.win.setBounds({ x: b.x, y: b.y, width: size, height: size }, false)
-    this.clampToDisplay()
-    this.saveOrigin()
+    this.snapToEdge()
   }
 
-  setPanelOpen(open: boolean): void {
-    PanelVisible.current = open
-    if (open) {
-      this.reveal()
-      this.cursorOutSince = 0
-    }
+  /** Kept for compatibility with the panel show/hide hooks. */
+  setPanelOpen(_open: boolean): void {
+    // The ball is always visible now; nothing to reveal/retract.
   }
-}
-
-export class PanelVisible {
-  static current = false
 }
