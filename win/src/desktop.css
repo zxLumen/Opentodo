@@ -1,0 +1,82 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  padding-top: 8px;
+  box-sizing: border-box;
+  color-scheme: dark;
+}
+
+#root {
+  height: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #17191f;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* The web build uses an 82%-opaque panel; on a transparent Windows window
+   that reads as muddy. Keep it near-solid for legibility. */
+.panel {
+  background: rgba(23, 25, 31, 0.97) !important;
+  border-radius: 12px;
+}
+
+.win-drag-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  z-index: 9998;
+  -webkit-app-region: drag;
+}
+
+.win-close {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 26px;
+  height: 20px;
+  z-index: 9999;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 16px;
+  line-height: 18px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.win-close:hover {
+  color: #fff;
+  background: rgba(255, 70, 70, 0.55);
+}
+
+/* Keep buttons/inputs clickable inside the drag strip area. */
+button,
+input,
+textarea,
+select,
+a {
+  -webkit-app-region: no-drag;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

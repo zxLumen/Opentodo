@@ -41,7 +41,7 @@ function emptyData() {
     revision: 0,
     updatedAt: nowIso(),
     items: [],
-    lists: [],
+    lists: ["收件箱"],
     tombstones: [],
     listTombstones: [],
     listRenames: [],
@@ -255,7 +255,18 @@ function atomicWrite(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
-  fs.renameSync(tmp, file);
+  // Windows: rename over an existing file can transiently fail with EPERM/EBUSY
+  // when another client (app / plugin / antivirus) still has it open.
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(tmp, file);
+      return;
+    } catch (e) {
+      const retry = ["EPERM", "EACCES", "EBUSY"].includes(e.code) && i < 20;
+      if (!retry) throw e;
+      sleepSync(25);
+    }
+  }
 }
 
 function backup(file) {

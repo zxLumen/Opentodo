@@ -1,0 +1,107 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+}
+
+* {
+  -webkit-app-region: no-drag;
+}
+
+.ball {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  transition: transform 0.12s ease;
+}
+
+.ball:active {
+  cursor: grabbing;
+  transform: scale(0.97);
+}
+
+.ball-ring {
+  position: absolute;
+  inset: 0;
+}
+
+.ball-track {
+  stroke: rgba(255, 255, 255, 0.16);
+}
+
+.ball-progress {
+  stroke: rgba(255, 255, 255, 0.92);
+  transition: stroke-dasharray 0.3s ease;
+}
+
+.ball-label {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  color: #fff;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.ball-count {
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.ball-sub {
+  margin-top: 2px;
+  font-size: 9px;
+  opacity: 0.75;
+}
+
+.ball-gradientA {
+  background: linear-gradient(145deg, #5b9cff, #2f5fe0);
+}
+.ball-glassB {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.38), rgba(120, 140, 190, 0.26));
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(8px);
+}
+.ball-ringC {
+  background: radial-gradient(circle at 32% 28%, #2d3748, #10141c 72%);
+  border: 1px solid rgba(120, 160, 255, 0.35);
+}
+.ball-darkD {
+  background: #0d0f14;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.ball-minimalE {
+  background: #f7f8fa;
+  color: #1b1d22;
+}
+.ball-minimalE .ball-label {
+  color: #1b1d22;
+  text-shadow: none;
+}
+.ball-minimalE .ball-progress {
+  stroke: #1b1d22;
+}
+.ball-minimalE .ball-track {
+  stroke: rgba(0, 0, 0, 0.12);
+}
+.ball-rainbowF {
+  background: conic-gradient(from 210deg, #ff6b6b, #ffd93d, #6bcb77, #4d96ff, #b15bff, #ff6b6b);
+}
+.ball-rainbowF .ball-label {
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}

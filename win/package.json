@@ -1,0 +1,41 @@
+{
+  "name": "opentodo-win",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Opentodo for Windows — floating todo panel for opencode",
+  "main": "dist-electron/main.cjs",
+  "author": "刘子祥",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k -n vite,electron -c cyan,magenta \"vite\" \"npm:dev:electron\"",
+    "dev:electron": "wait-on tcp:5173 && npm run build:main && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "build:main": "esbuild electron/main.ts electron/preload.ts --bundle --platform=node --format=cjs --target=node20 --external:electron --outdir=dist-electron --out-extension:.js=.cjs",
+    "build:renderer": "vite build",
+    "build": "npm run typecheck && npm run build:main && npm run build:renderer",
+    "start": "electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "icon": "node scripts/make-icon.mjs",
+    "dist": "npm run icon && npm run build && electron-builder --win nsis portable --publish never"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "cross-env": "^10.1.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "png-to-ico": "^3.0.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.2",
+    "vite": "^8.3.5",
+    "wait-on": "^9.5.1"
+  }
+}
