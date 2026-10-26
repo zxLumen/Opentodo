@@ -213,7 +213,6 @@ export function applyLaunchAtLogin(enabled: boolean): void {
     app.setLoginItemSettings({
       openAtLogin: enabled,
       path: process.execPath,
-      args: ['--hidden'],
     })
   } catch (err) {
     console.error('[opentodo] setLoginItemSettings failed', err)
