@@ -1,0 +1,148 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  padding-top: 8px;
+  box-sizing: border-box;
+  color-scheme: dark;
+}
+
+#root {
+  height: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #17191f;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* The web build uses an 82%-opaque panel; on a transparent Windows window
+   that reads as muddy. Keep it near-solid for legibility. */
+.panel {
+  background: rgba(23, 25, 31, 0.97) !important;
+  border-radius: 12px;
+}
+
+.win-drag-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  z-index: 9998;
+  -webkit-app-region: drag;
+}
+
+.win-close {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 26px;
+  height: 20px;
+  z-index: 9999;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 16px;
+  line-height: 18px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.win-close:hover {
+  color: #fff;
+  background: rgba(255, 70, 70, 0.55);
+}
+
+/* Keep buttons/inputs clickable inside the drag strip area. */
+button,
+input,
+textarea,
+select,
+a {
+  -webkit-app-region: no-drag;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* In-app replacement for window.prompt() (not supported by Electron). */
+.win-prompt-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.48);
+  -webkit-app-region: no-drag;
+}
+
+.win-prompt {
+  width: 300px;
+  padding: 16px;
+  border-radius: 12px;
+  background: #1d2027;
+  border: 1px solid #303645;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  color: #e8eaf0;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.win-prompt-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.win-prompt-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid #303645;
+  background: #12141a;
+  color: #e8eaf0;
+  outline: none;
+}
+
+.win-prompt-input:focus {
+  border-color: #4f8dfd;
+}
+
+.win-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.win-prompt-actions button {
+  border: 1px solid #303645;
+  background: #232833;
+  color: #dfe5f2;
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.win-prompt-actions button.primary {
+  background: #3b6fe0;
+  border-color: #3b6fe0;
+  color: #fff;
+}

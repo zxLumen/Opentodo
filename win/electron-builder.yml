@@ -1,0 +1,33 @@
+appId: com.opentodo.win
+productName: Opentodo
+copyright: Copyright © 2026 刘子祥
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+extraResources:
+  - from: ../plugin/opentodo.js
+    to: plugin/opentodo.js
+  - from: build/icon.png
+    to: icon.png
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: Opentodo-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Opentodo
+  artifactName: Opentodo-Setup-${version}.${ext}
+portable:
+  artifactName: Opentodo-${version}-portable.${ext}

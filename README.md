@@ -35,6 +35,7 @@
 - **数据层（v3）**：服务端持有唯一真相源；Mac 本地文件 `/Users/you/.config/opentodo/todos.json` 作为镜像（插件 / MCP 仍读它），iOS 用应用沙盒内镜像。schema 见 `shared/schema.md`。删除写墓碑，项目改名写 `listRenames`。
 - **工具层（关键）**：`plugin/opentodo.js` 是 opencode **V2** 插件（`@opencode/plugin` + `Plugin.define`），注册 `opentodo_*` 工具（增删改查/归档/项目）并往系统提示注入当前项目与待办摘要。它运行在 **opencode 自带的运行时**里，所以**不需要 node、不需要独立的 MCP 进程**。
 - **App**：`app/`，SwiftUI + AppKit `NSPanel`。菜单栏常驻 + 可拖浮球 + 面板（**左侧项目栏** + 待办列表 + 对话）。对话后端是 App 自己拉起的 `opencode serve`。
+- **Windows App**：`win/`，Electron + React。复用 `web/src` 面板与 `web/ops.js` / `mcp/lib/store.js` 数据层，主进程负责悬浮球、托盘、快捷键、对话与同步。
 - **MCP（可选）**：`mcp/` 是一个独立的 stdio MCP server，功能与插件一致，供其它 MCP 客户端或开发使用；App 本身不依赖它。
 
 ## iOS
@@ -52,6 +53,23 @@ open Opentodo.xcodeproj
 - 首次打开 → 设置 → 填服务器地址 + 站长口令 → 配对。之后所有请求用设备令牌（存 Keychain）。
 - 语音用系统 `SFSpeechRecognizer`（中文），优先设备端模型，失败自动回落在线识别；识别结果交给本地意图解析，明确动作（完成/删除/归档）直接执行，其余默认记成待办。
 - AI 对话调用服务端 `/api/chat`，手机上不保存模型 API Key。详见 `ios/README.md`。
+
+## Windows
+
+Electron + React 桌面版：悬浮球 / 面板 / 托盘 / 全局快捷键 / AI 对话 / 多端同步，数据与其它端共用同一份 `todos.json`。
+
+```powershell
+cd win
+npm install
+node node_modules/electron/install.js   # npm 11 跳过 postinstall 时执行一次
+npm run dev
+```
+
+- 打包：`npm run icon` → `npm run dist`，输出 `win/release/Opentodo-Setup-<version>.exe` 和便携版。
+- 前置：Windows 10 21H2+ / 11 x64、Node.js 22+（构建用）、已配置好的 **opencode V2**。
+- 快捷键默认 `Ctrl+Alt+T`，被占用时回退 `Ctrl+Shift+Alt+T`。
+- 数据仍在 `%USERPROFILE%\.config\opentodo\todos.json`，与 Mac / iOS / Web / 插件 / MCP 共用。
+- 首次运行未签名安装包可能触发 SmartScreen；详细说明与排错见 [`win/README.md`](win/README.md)。
 
 ## 三端同步怎么开
 
@@ -143,6 +161,7 @@ ios/        SwiftUI iOS App（待办 + 语音 + AI 对话 + 同步）
 shared/     数据契约与示例；shared/swift/OpentodoCore 为 Mac/iOS 共用模型与同步客户端
 mcp/        独立 stdio MCP server（可选，供其它客户端/开发）+ merge.js 合并引擎
 web/        Web 版（服务端 API + React 前端 + 设备配对 + /api/sync）
+win/        Windows 桌面版（Electron 主进程 + 复用 web/src 的 React 面板）
 scripts/    build-app.sh / install.sh（清理）/ setup-signing.sh
 ```
 
@@ -155,5 +174,6 @@ scripts/    build-app.sh / install.sh（清理）/ setup-signing.sh
 - ✅ 左侧项目栏、点击就地编辑、拖拽排序（插入横杠）、拖到项目
 - ✅ 数据防丢（内存重建 + 备份 + 损坏拒写）、自检通过
 - ✅ 三端同步：服务端合并（条目 LWW + 删除墓碑 + 项目改名）、Mac/iOS 离线缓存
+- ✅ Windows 桌面版：悬浮球/面板/托盘/快捷键/AI 对话/同步，Electron + React
 - ✅ iOS：待办管理 + 中文语音快速记录 + AI 对话（复用服务端模型）
 - ⏳ 签名/公证打磨（Mac 当前用稳定自签名/Apple Development，未公证）

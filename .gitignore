@@ -29,3 +29,11 @@ release-assets/
 ios/.build/
 ios/DerivedData/
 ios/scripts/wifi.local.sh
+
+# Windows 桌面版
+win/node_modules/
+win/dist/
+win/dist-electron/
+win/release/
+win/test-data/
+win/build/icon.ico
