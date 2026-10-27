@@ -382,10 +382,14 @@ function registerIpc(): void {
 }
 
 app.on('second-instance', () => {
+  // A second launch (Start menu / desktop shortcut) should bring back both
+  // surfaces, even if the first instance was started with a stale --hidden flag.
+  ball?.show()
   panel?.show()
 })
 
 app.whenReady().then(() => {
+  if (!gotLock) return
   app.setAppUserModelId('com.opentodo.win')
   settings.load()
   log('starting', `data=${dataFile()}`, `argv=${process.argv.join(' ')}`)
@@ -408,12 +412,17 @@ app.whenReady().then(() => {
   createPanel()
   createTray()
   registerHotkey(settings.get().hotkey)
-  if (settings.get().launchAtLogin) applyLaunchAtLogin(true)
+  // Reconcile the Windows Run key with the saved preference. This also removes
+  // stale entries left by older builds (which used --hidden).
+  applyLaunchAtLogin(settings.get().launchAtLogin)
 
-  const hidden = process.argv.includes('--hidden')
-  log('startup visibility', `hidden=${hidden}`, `ballVisible=${ball?.win.isVisible()}`)
-  if (!hidden) ball?.show()
-  log('after show', `ballVisible=${ball?.win.isVisible()}`)
+  // The ball is always shown now; ignore --hidden for backwards compatibility
+  // with old autostart entries.
+  if (process.argv.includes('--hidden')) {
+    log('ignoring --hidden: floating ball is always visible')
+  }
+  ball?.show()
+  log('startup visibility', `ballVisible=${ball?.win.isVisible()}`)
   if (process.env.OPENTODO_SHOW_PANEL === '1') {
     setTimeout(() => panel?.show(), 800)
   }
@@ -426,6 +435,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  if (!gotLock) return
   stopSyncPoll()
   for (const c of chatControllers.values()) c.abort()
   chatControllers.clear()

@@ -180,6 +180,9 @@ class SettingsStore extends EventEmitter {
   }
 
   flush(): void {
+    // A second instance exits before loading settings; never overwrite the real
+    // settings file with defaults in that case.
+    if (!this.loaded) return
     if (this.writeTimer) {
       clearTimeout(this.writeTimer)
       this.writeTimer = null
@@ -213,6 +216,7 @@ export function applyLaunchAtLogin(enabled: boolean): void {
     app.setLoginItemSettings({
       openAtLogin: enabled,
       path: process.execPath,
+      name: 'com.opentodo.win',
     })
   } catch (err) {
     console.error('[opentodo] setLoginItemSettings failed', err)
