@@ -61,12 +61,11 @@ struct SidebarView: View {
                         Text(name)
                             .lineLimit(2)
                         Spacer()
-                        let count = model.count(for: name)
-                        if count > 0 {
-                            Text("\(count)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
+                        let counts = model.counts(for: name)
+                        Text("\(counts.pending)/\(counts.inProgress)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("待办 \(counts.pending) 条，进行中 \(counts.inProgress) 条")
                     }
                     .tag(name)
                     .contextMenu {

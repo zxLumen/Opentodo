@@ -224,6 +224,12 @@ struct TodoListView: View {
                 }
                 .tint(.green)
                 Button {
+                    model.reopen(item)
+                } label: {
+                    Label("撤回待办", systemImage: "arrow.uturn.backward")
+                }
+                .tint(.blue)
+                Button {
                     model.cancel(item)
                 } label: {
                     Label("取消", systemImage: "minus.circle")

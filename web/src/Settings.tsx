@@ -229,7 +229,7 @@ export function SettingsPanel({
           </button>
         </div>
         <div className="settings-hint">
-          直连各家的 OpenAI 兼容接口。密钥存服务器 `web/data/chat.key`(env `OPENTODO_CHAT_KEY` 优先)。
+          直连各家的 OpenAI 兼容接口。密钥存服务器数据目录的 `chat.key`(容器为 `/data`,权限 600;env `OPENTODO_CHAT_KEY` 优先)。
         </div>
       </div>
     </div>

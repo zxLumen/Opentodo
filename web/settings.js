@@ -1,10 +1,11 @@
 // 聊天/模型配置与密钥的存取。
-//   配置 → web/data/settings.json(非密钥,可入库前忽略)
-//   密钥 → web/data/chat.key(chmod 600);env OPENTODO_CHAT_KEY 优先(适合容器/CI)
+//   配置 → <DATA_DIR>/settings.json(非密钥;DATA_DIR 默认 web/data,容器里是 /data)
+//   密钥 → <DATA_DIR>/chat.key(chmod 600);env OPENTODO_CHAT_KEY 优先(适合容器/CI)
 // 两者都在 .gitignore 里(见仓库根 web/data)。
 
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { defaultBaseUrl, ensureUrl, getProvider, protocolOf, PROVIDERS } from './providers.js'
 import { effortMapFor, effortValues } from './effort.js'
@@ -101,6 +102,39 @@ export function getApiKey() {
   return (process.env.ZX_AI_APP_TOKEN || '').trim()
 }
 
+/**
+ * 密钥只落 DATA_DIR(生产是挂载卷 /data),原子写 + 固定 0600:
+ *   - 先写同目录临时文件、fsync、rename,避免进程重启/容器被杀时留下半截文件;
+ *   - 覆盖已有文件时 mode 参数不生效,所以 rename 后再 chmod 一次。
+ * 绝不写进仓库里的 web/data(该目录已在 .gitignore)。
+ */
+function writePrivateFile(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = `${file}.tmp.${process.pid}.${crypto.randomBytes(4).toString('hex')}`
+  let fd
+  try {
+    fd = fs.openSync(tmp, 'w', 0o600)
+    fs.writeFileSync(fd, text.endsWith('\n') ? text : `${text}\n`, 'utf8')
+    fs.fsyncSync(fd)
+    fs.closeSync(fd)
+    fd = undefined
+    fs.renameSync(tmp, file)
+    fs.chmodSync(file, 0o600)
+  } catch (e) {
+    try {
+      if (fd !== undefined) fs.closeSync(fd)
+    } catch {
+      /* ignore */
+    }
+    try {
+      fs.unlinkSync(tmp)
+    } catch {
+      /* ignore */
+    }
+    throw e
+  }
+}
+
 export function setApiKey(key) {
   const k = String(key ?? '').trim()
   if (!k) {
@@ -111,8 +145,7 @@ export function setApiKey(key) {
     }
     return
   }
-  fs.mkdirSync(DATA_DIR, { recursive: true })
-  fs.writeFileSync(KEY_FILE, k + '\n', { mode: 0o600 })
+  writePrivateFile(KEY_FILE, k)
 }
 
 export function maskKey(key) {

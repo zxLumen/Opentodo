@@ -78,7 +78,19 @@ final class AppModel: ObservableObject {
     }
 
     func count(for list: String) -> Int {
-        file.items.filter { $0.listName == list && $0.isActive && !$0.isArchived }.count
+        let c = counts(for: list)
+        return c.pending + c.inProgress
+    }
+
+    /// 项目右侧计数:待办 / 进行中(只算未归档条目)。
+    func counts(for list: String) -> (pending: Int, inProgress: Int) {
+        var pending = 0
+        var inProgress = 0
+        for item in file.items where item.listName == list && !item.isArchived {
+            if item.status == "pending" { pending += 1 }
+            else if item.status == "in_progress" { inProgress += 1 }
+        }
+        return (pending, inProgress)
     }
 
     var sections: [TodoSection] {

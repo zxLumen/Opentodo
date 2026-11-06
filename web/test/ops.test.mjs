@@ -50,6 +50,20 @@ test('addList 重新加回同名项目会移除墓碑', () => {
   assert.ok(!after.listTombstones.some((t) => t.name === '项目X'))
 })
 
+test('setStatus: 进行中可撤回待办(in_progress → pending),再开始', () => {
+  const file = tempFile()
+  const added = runOp('add', { content: 'A', list: '收件箱', status: 'in_progress' }, file)
+  const id = added.items[0].id
+  assert.equal(added.items[0].status, 'in_progress')
+
+  const pending = runOp('setStatus', { id, status: 'pending' }, file)
+  assert.equal(pending.items[0].status, 'pending')
+  assert.equal(pending.items[0].completedAt, null)
+
+  const again = runOp('setStatus', { id, status: 'in_progress' }, file)
+  assert.equal(again.items[0].status, 'in_progress')
+})
+
 test('清空归档写墓碑而不是静默消失', () => {
   const file = tempFile()
   const added = runOp('add', { content: 'A', list: '收件箱' }, file)

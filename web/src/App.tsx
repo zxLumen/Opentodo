@@ -264,14 +264,18 @@ export default function App() {
     return out
   }, [visible, section])
 
-  const activeCount = useCallback(
-    (name: string) =>
-      items.filter(
-        (it) =>
-          listName(it) === name &&
-          it.archivedAt == null &&
-          (it.status === 'pending' || it.status === 'in_progress'),
-      ).length,
+  /** 每个项目右侧的计数:待办 / 进行中(只算未归档条目,与 JSON 状态统计一致) */
+  const statusCounts = useCallback(
+    (name: string) => {
+      let pending = 0
+      let inProgress = 0
+      for (const it of items) {
+        if (listName(it) !== name || it.archivedAt != null) continue
+        if (it.status === 'pending') pending += 1
+        else if (it.status === 'in_progress') inProgress += 1
+      }
+      return { pending, inProgress }
+    },
     [items],
   )
 
@@ -565,7 +569,7 @@ export default function App() {
           </div>
           <div className="projects">
             {lists.map((name) => {
-              const n = activeCount(name)
+              const counts = statusCounts(name)
               const reorderSide =
                 projDrag.dragName && projDrag.drop.over === name
                   ? projDrag.drop.before
@@ -594,7 +598,15 @@ export default function App() {
                   ) : (
                     <>
                       <span className="p-name">{name}</span>
-                      {n > 0 && <span className="p-count">{n}</span>}
+                      <span
+                        className="p-count"
+                        title={`待办 ${counts.pending} / 进行中 ${counts.inProgress}`}
+                        aria-label={`待办 ${counts.pending} 条,进行中 ${counts.inProgress} 条`}
+                      >
+                        <span>{counts.pending}</span>
+                        <span className="p-count-sep">/</span>
+                        <span className="p-count-doing">{counts.inProgress}</span>
+                      </span>
                       <button
                         className="p-more"
                         type="button"
@@ -966,9 +978,14 @@ function Row(props: {
             </button>
           )}
           {item.status === 'in_progress' && (
-            <button title="取消" onClick={() => props.onStatus('cancelled')}>
-              <IconX />
-            </button>
+            <>
+              <button title="撤回待办" onClick={() => props.onStatus('pending')}>
+                <IconRestore />
+              </button>
+              <button title="取消" onClick={() => props.onStatus('cancelled')}>
+                <IconX />
+              </button>
+            </>
           )}
           {item.status === 'cancelled' && (
             <button title="重新打开" onClick={() => props.onStatus('pending')}>

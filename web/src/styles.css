@@ -125,9 +125,19 @@ button {
 
 .project .p-count {
   flex: 0 0 auto;
+  display: inline-flex;
+  gap: 1px;
   color: var(--fg-faint);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+.project .p-count-sep {
+  opacity: 0.55;
+}
+
+.project .p-count-doing {
+  color: var(--accent);
 }
 
 /* 悬停才露出的「⋯」(右键同效) */
