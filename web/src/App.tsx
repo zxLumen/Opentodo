@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { applyOp, fetchChatHistory, fetchState, saveChatHistory } from './api'
 import { CANCELLED_GROUP, INBOX, UNGROUPED, type Priority, type TodoFile, type TodoItem } from './types'
+import { scanOverdue } from '../overdue.js'
 import { useProjectDrag, useRowDrag } from './useRowDrag'
 import { useSessionState } from './sessionState'
 import { fastIntent } from './intent'
@@ -240,12 +241,30 @@ export default function App() {
     return inList
   }, [items, list, section])
 
-  // 分组:活动段把「已取消」单独拎到灰色一组;其余按 project 分组
+  /** 全量到期扫描:当前项目里 pending 超过 30 天的条目(按账龄降序) */
+  const overdueScan = useMemo(() => scanOverdue(items), [items])
+  const overdueAge = useMemo(
+    () => new Map(overdueScan.overdue.map((x) => [x.item.id, x.ageDays])),
+    [overdueScan],
+  )
+
+  // 分组:到期条目单独置顶(标红);活动段把「已取消」单独拎到灰色一组;其余按 project 分组
   const groups = useMemo(() => {
-    const out: { key: string; label: string; cancelled: boolean; items: TodoItem[] }[] = []
+    const out: {
+      key: string
+      label: string
+      cancelled: boolean
+      overdue?: boolean
+      items: TodoItem[]
+    }[] = []
     const byProj = new Map<string, TodoItem[]>()
     const cancelled: TodoItem[] = []
+    const overdue: TodoItem[] = []
     for (const it of visible) {
+      if (section === 'active' && overdueAge.has(it.id)) {
+        overdue.push(it)
+        continue
+      }
       if (section === 'active' && it.status === 'cancelled') {
         cancelled.push(it)
         continue
@@ -255,6 +274,16 @@ export default function App() {
       if (arr) arr.push(it)
       else byProj.set(p, [it])
     }
+    if (overdue.length) {
+      overdue.sort((a, b) => (overdueAge.get(b.id) ?? 0) - (overdueAge.get(a.id) ?? 0))
+      out.push({
+        key: 'overdue',
+        label: `超 30 天未处理（${overdue.length}）`,
+        cancelled: false,
+        overdue: true,
+        items: overdue,
+      })
+    }
     for (const [p, its] of [...byProj.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
       out.push({ key: p, label: p, cancelled: false, items: [...its].sort((a, b) => a.order - b.order) })
     }
@@ -262,7 +291,7 @@ export default function App() {
       out.push({ key: CANCELLED_GROUP, label: CANCELLED_GROUP, cancelled: true, items: cancelled })
     }
     return out
-  }, [visible, section])
+  }, [visible, section, overdueAge])
 
   /** 每个项目右侧的计数:待办 / 进行中(只算未归档条目,与 JSON 状态统计一致) */
   const statusCounts = useCallback(
@@ -818,12 +847,17 @@ export default function App() {
           {total === 0 && <div className="empty">这里还没有条目</div>}
           {groups.map((g) => (
             <div key={g.key}>
-              <div className={`group-label${g.cancelled ? ' is-cancelled' : ''}`}>{g.label}</div>
+              <div
+                className={`group-label${g.cancelled ? ' is-cancelled' : ''}${g.overdue ? ' is-overdue' : ''}`}
+              >
+                {g.label}
+              </div>
               {g.items.map((it) => (
                 <Row
                   key={it.id}
                   item={it}
                   section={section}
+                  overdueDays={overdueAge.get(it.id)}
                   editing={editingId === it.id}
                   dragging={drag.dragId === it.id}
                   drop={
@@ -928,6 +962,7 @@ export default function App() {
 function Row(props: {
   item: TodoItem
   section: Section
+  overdueDays?: number
   editing: boolean
   dragging: boolean
   drop?: 'before' | 'after'
@@ -949,6 +984,7 @@ function Row(props: {
       className="row"
       ref={props.registerRef}
       data-status={item.status}
+      data-overdue={props.overdueDays != null ? '' : undefined}
       data-dragging={props.dragging ? '' : undefined}
       data-drop={props.drop}
       onPointerDown={props.onPointerDown}
@@ -966,6 +1002,12 @@ function Row(props: {
         <InlineEdit initial={item.content} onDone={props.onEditEnd} />
       ) : (
         <div className="content">{item.content}</div>
+      )}
+
+      {!editing && props.overdueDays != null && (
+        <span className="age-badge" title={`创建至今 ${props.overdueDays} 天,已超 30 天`}>
+          {props.overdueDays} 天
+        </span>
       )}
 
       {!editing && <span className={`prio ${item.priority}`} title={`优先级:${item.priority}`} />}

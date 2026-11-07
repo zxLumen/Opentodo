@@ -33,6 +33,12 @@ npm start              # → http://localhost:8787
 - **已配对设备**:`<DATA_DIR>/devices.json`(只存设备 token 的 SHA-256;Mac / iOS 配对后用它访问)。
 - 待办文件与 App / 插件 / MCP 完全兼容:同一把 mkdir 文件锁、同一条原子 rename、同一个 `revision`。
 
+## 到期扫描(只读)
+
+- **面板**:`待办`段里 `pending` 且 `createdAt` 超过 30 天的条目会**标红并置顶**到「超 30 天未处理」分组,行尾显示账龄天数;分组/状态都不改。
+- **命令行**:`npm run scan:overdue -- --file <todos.json>` 输出 pending 账龄分布 + 超期清单;默认读 `~/.config/opentodo/todos.json`。支持 `--now <ISO>`(复算)、`--days 30`、`--json`、`--out <file.md>`。
+- 纯函数在 `overdue.js`(Web UI 与脚本共用),扫描只读,不写 `todos.json`;发送通道不在本模块内。
+
 ## 访客隔离(B 方案)
 
 - **每个访客一份独立数据**:服务端给每个访客发 `zx_todo_cid` cookie,数据落
@@ -63,11 +69,13 @@ web/
 ├─ settings.js      聊天配置/密钥存取 + 拉模型
 ├─ effort.js        思考强度查表(models.dev 切片)
 ├─ effort-options.json  生成的「按模型可选的思考强度」(入库)
+├─ overdue.js       账龄/到期扫描纯函数(UI 与脚本共用)
 ├─ chat.js          聊天引擎:流式 + tools 循环 + 指令协议兜底
 ├─ chatstore.js     对话记录落盘(按数据域,原子写,最近 60 条)
 ├─ devices.js       设备令牌配对 / 校验 / 撤销
 ├─ scripts/mock-openai.mjs  本地 mock provider(仅开发验证)
 ├─ scripts/gen-effort-slice.mjs  生成 effort-options.json
+├─ scripts/overdue-scan.mjs  每日到期扫描(只读,输出账龄分布/提醒清单)
 ├─ scripts/selftest.mjs  思考强度/请求体自测(node --test)
 ├─ src/             React 前端(视觉照搬 UI.swift)
 │   ├─ App.tsx        面板:项目栏 / 四段 / 列表 / 分组 / 对话

@@ -12,6 +12,7 @@
     "start": "node --env-file-if-exists=.env server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test scripts/selftest.mjs test/*.test.mjs",
+    "scan:overdue": "node scripts/overdue-scan.mjs",
     "gen:effort": "node scripts/gen-effort-slice.mjs"
   },
   "dependencies": {

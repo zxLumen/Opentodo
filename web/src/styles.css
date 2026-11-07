@@ -445,6 +445,31 @@ button {
   color: var(--fg-faint);
 }
 
+.group-label.is-overdue {
+  color: var(--p-high);
+}
+
+/* 超 30 天:pending 行标红并置顶(排序在 App.tsx 里做) */
+.row[data-overdue] .content {
+  color: var(--p-high);
+}
+
+.row[data-overdue] .status {
+  border-color: var(--p-high);
+}
+
+.age-badge {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: var(--p-high);
+  background: rgba(255, 69, 58, 0.14);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
 .empty {
   padding: 28px 12px;
   text-align: center;
