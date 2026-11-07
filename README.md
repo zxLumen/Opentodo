@@ -126,6 +126,15 @@ open dist/Opentodo.app          # 或把 dist/Opentodo.zip 拷到任何机器解
 - 防丢数据：写前备份 `todos.json.bak`；文件被删时以内存列表重建；解析失败则拒写。
 - 自检：`OPENTODO_SELFTEST=1 dist/Opentodo.app/Contents/MacOS/Opentodo` 跑数据安全与快速模式断言。
 
+## 每日提醒
+`scripts/remind.mjs` 读取线上 `todos.json`，把 pending 且账龄 ≥7 天（或当天到期）的条目汇总成一条 Bark 通知（group=opentodo），同一 id 每天只推一次。
+```bash
+node scripts/remind.mjs --dry-run             # 只输出「天数 项目 内容」
+node scripts/remind.mjs                       # 推送未提醒过的条目
+node scripts/remind.mjs --days 30 --dry-run   # 只看超 30 天
+```
+状态文件 `~/.local/state/opentodo-remind/last.json`；user timer 每天 09:00 触发。
+
 ## 环境变量
 
 | 变量 | 作用 |
@@ -143,7 +152,7 @@ ios/        SwiftUI iOS App（待办 + 语音 + AI 对话 + 同步）
 shared/     数据契约与示例；shared/swift/OpentodoCore 为 Mac/iOS 共用模型与同步客户端
 mcp/        独立 stdio MCP server（可选，供其它客户端/开发）+ merge.js 合并引擎
 web/        Web 版（服务端 API + React 前端 + 设备配对 + /api/sync）
-scripts/    build-app.sh / install.sh（清理）/ setup-signing.sh
+scripts/    build-app.sh / install.sh（清理）/ setup-signing.sh / remind.mjs（每日提醒）
 ```
 
 ## 状态
