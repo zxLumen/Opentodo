@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test scripts/selftest.mjs test/*.test.mjs",
     "scan:overdue": "node scripts/overdue-scan.mjs",
+    "mail:overdue": "node scripts/overdue-mail.mjs",
     "gen:effort": "node scripts/gen-effort-slice.mjs"
   },
   "dependencies": {

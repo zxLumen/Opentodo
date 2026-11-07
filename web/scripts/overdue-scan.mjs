@@ -14,6 +14,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { OVERDUE_DAYS, scanOverdue } from '../overdue.js'
+import { readTodoData, renderMarkdown } from '../overdue-report.js'
 
 function parseArgs(argv) {
   const args = { file: '', now: '', out: '', json: false, days: OVERDUE_DAYS }
@@ -41,54 +42,6 @@ function defaultFile() {
   return process.env.OPENTODO_FILE || path.join(os.homedir(), '.config', 'opentodo', 'todos.json')
 }
 
-function readData(file) {
-  const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
-  // 兼容 GET /api/state 的 { data, owner } 包装
-  return raw && raw.data && Array.isArray(raw.data.items) ? raw.data : raw
-}
-
-function pad(value) {
-  return String(value).padStart(2, '0')
-}
-
-function stamp(d) {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
-function renderMarkdown({ file, data, scan }) {
-  const lines = [
-    `# Opentodo 到期扫描 · ${stamp(scan.now)}`,
-    '',
-    `- 数据文件: \`${file}\``,
-    `- revision: ${data.revision ?? '—'}`,
-    `- pending: ${scan.totalPending}`,
-    `- 超 ${scan.days} 天: ${scan.count}`,
-    '',
-    '## 账龄分布',
-    '',
-    '| 账龄 | 条数 |',
-    '| --- | ---: |',
-    ...scan.buckets.map((b) => `| ${b.label} | ${b.count} |`),
-    `| **合计** | **${scan.buckets.reduce((n, b) => n + b.count, 0)}** |`,
-    '',
-    `## 超 ${scan.days} 天清单(按天数降序)`,
-    '',
-  ]
-  if (!scan.overdue.length) {
-    lines.push('无。')
-  } else {
-    lines.push('| # | 天数 | 项目 | 分组 | 内容 | ID |', '| ---: | ---: | --- | --- | --- | --- |')
-    scan.overdue.forEach(({ item, ageDays }, i) => {
-      const content = String(item.content ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
-      lines.push(
-        `| ${i + 1} | ${ageDays} | ${item.list ?? '收件箱'} | ${item.project ?? '—'} | ${content} | \`${item.id}\` |`,
-      )
-    })
-  }
-  lines.push('', '> 只读扫描,未修改任何待办。', '')
-  return lines.join('\n')
-}
-
 const args = parseArgs(process.argv.slice(2))
 const file = args.file || defaultFile()
 const now = args.now ? new Date(args.now) : new Date()
@@ -103,7 +56,7 @@ if (!Number.isFinite(args.days) || args.days < 0) {
 
 let data
 try {
-  data = readData(file)
+  data = readTodoData(file)
 } catch (err) {
   console.error(`读取失败 ${file}: ${err instanceof Error ? err.message : String(err)}`)
   process.exit(1)
