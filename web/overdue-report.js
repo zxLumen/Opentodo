@@ -2,6 +2,7 @@
 // mailer.py 的 md_to_html 不渲染表格,所以邮件正文用列表,不用表格。
 
 import fs from 'node:fs'
+import { DUE_SOON_DAYS } from './overdue.js'
 
 /** 读取 todos.json;兼容 GET /api/state 的 { data, owner } 包装。 */
 export function readTodoData(file) {
@@ -24,6 +25,24 @@ function mdCell(value) {
 
 function bucketRows(scan) {
   return scan.buckets.map((b) => `| ${b.label} | ${b.count} |`)
+}
+
+function dueRows(entries) {
+  const rows = [
+    '| 到期日 | 距今天数 | 项目 | 分组 | 内容 | ID |',
+    '| --- | ---: | --- | --- | --- | --- |',
+  ]
+  for (const { item, dueAt, dueInDays } of entries) {
+    const delta = dueInDays > 0 ? `+${dueInDays}` : String(dueInDays)
+    rows.push(
+      `| ${dueAt} | ${delta} | ${mdCell(item.list ?? '收件箱')} | ${mdCell(item.project ?? '—')} | ${mdCell(item.content)} | \`${item.id}\` |`,
+    )
+  }
+  return rows
+}
+
+function dueSection(title, entries) {
+  return [`### ${title}（${entries.length} 条）`, '', ...(entries.length ? dueRows(entries) : ['无。']), '']
 }
 
 /** 扫描清单 Markdown(带表格,用于文档/终端)。 */
@@ -56,7 +75,11 @@ export function renderMarkdown({ file, data, scan }) {
       )
     })
   }
-  lines.push('', '> 只读扫描,未修改任何待办。', '')
+  lines.push('', '## dueAt 到期判定', '', `- 未来 ${DUE_SOON_DAYS} 天内到期：${scan.due.counts.soon} 条`, `- 今天到期：${scan.due.counts.today} 条`, `- 已逾期：${scan.due.counts.overdue} 条`, '')
+  lines.push(...dueSection(`未来 ${DUE_SOON_DAYS} 天内到期`, scan.due.soon))
+  lines.push(...dueSection('今天到期', scan.due.today))
+  lines.push(...dueSection('已逾期', scan.due.overdue))
+  lines.push('> 只读扫描,未修改任何待办。', '')
   return lines.join('\n')
 }
 

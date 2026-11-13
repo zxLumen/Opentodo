@@ -58,6 +58,40 @@ test('renderMarkdown:扫描清单仍是表格', () => {
   assert.match(body, /只读扫描,未修改任何待办/)
 })
 
+test('overdue-scan CLI:JSON 输出包含 dueAt 字段与三档分组', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opentodo-scan-'))
+  const todoFile = path.join(dir, 'todos.json')
+  fs.writeFileSync(
+    todoFile,
+    JSON.stringify({
+      revision: 7,
+      items: [
+        item('old-due', '2026-09-23T00:00:00Z', { content: '旧任务', dueAt: '2026-11-09' }),
+        item('old-nodue', '2026-09-01T00:00:00Z', { content: '无到期日' }),
+        item('moto', '2026-10-11T00:00:00Z', { content: '摩托车年检｜下一步：2026-11-07' }),
+      ],
+    }),
+  )
+
+  const r = spawnSync(
+    process.execPath,
+    ['scripts/overdue-scan.mjs', '--file', todoFile, '--now', '2026-11-07T00:00:00Z', '--json'],
+    { cwd: path.resolve('.'), encoding: 'utf8' },
+  )
+  assert.equal(r.status, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+
+  assert.equal(out.overdue.length, 2)
+  for (const entry of out.overdue) assert.ok(Object.hasOwn(entry, 'dueAt'))
+  assert.equal(out.overdue.find((x) => x.id === 'old-due').dueAt, '2026-11-09')
+  assert.equal(out.overdue.find((x) => x.id === 'old-nodue').dueAt, null)
+
+  assert.equal(out.due.total, 2)
+  assert.equal(out.due.soon[0].dueAt, '2026-11-09')
+  assert.equal(out.due.soon[0].dueInDays, 2)
+  assert.equal(out.due.today[0].dueAt, '2026-11-07')
+})
+
 test('overdue-mail CLI:通过 mailer 发送(用假 mailer 验证,不真发邮件)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opentodo-mail-'))
   const todoFile = path.join(dir, 'todos.json')

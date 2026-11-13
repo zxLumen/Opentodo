@@ -64,6 +64,18 @@ try {
 
 const scan = scanOverdue(data.items ?? [], { now, days: args.days })
 
+const entry = ({ item, dueAt, dueInDays, ageDays }) => ({
+  id: item.id,
+  content: item.content,
+  list: item.list,
+  project: item.project ?? null,
+  createdAt: item.createdAt ?? null,
+  updatedAt: item.updatedAt ?? null,
+  dueAt: dueAt ?? null,
+  ...(dueInDays != null ? { dueInDays } : {}),
+  ...(ageDays != null ? { ageDays } : {}),
+})
+
 const output = args.json
   ? JSON.stringify(
       {
@@ -74,15 +86,14 @@ const output = args.json
         totalPending: scan.totalPending,
         buckets: scan.buckets,
         count: scan.count,
-        overdue: scan.overdue.map(({ item, ageDays }) => ({
-          id: item.id,
-          content: item.content,
-          list: item.list,
-          project: item.project ?? null,
-          createdAt: item.createdAt ?? null,
-          updatedAt: item.updatedAt ?? null,
-          ageDays,
-        })),
+        overdue: scan.overdue.map(entry),
+        due: {
+          soon: scan.due.soon.map(entry),
+          today: scan.due.today.map(entry),
+          overdue: scan.due.overdue.map(entry),
+          counts: scan.due.counts,
+          total: scan.due.total,
+        },
       },
       null,
       2,
