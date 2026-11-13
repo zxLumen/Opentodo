@@ -373,7 +373,7 @@ struct SettingsView: View {
                         Text(loadError ?? "")
                             .font(.caption)
                             .foregroundStyle(.red)
-                        Button("重试") { load() }.controlSize(.small)
+                        Button("重试") { load(force: true) }.controlSize(.small)
                     }
                 }
                 Button {
@@ -410,7 +410,7 @@ struct SettingsView: View {
                 }
                 Toggle("快速模式（简单指令本地处理，不调用模型）", isOn: $settings.fastMode)
                 HStack {
-                    Button(loading ? "加载中…" : "刷新模型目录") { load() }
+                    Button(loading ? "加载中…" : "刷新模型目录") { load(force: true) }
                         .disabled(loading)
                     if let loadError {
                         Text(loadError).font(.caption).foregroundStyle(.red)
@@ -677,11 +677,11 @@ struct SettingsView: View {
         return "\(home)/.config/opentodo/todos.json"
     }
 
-    private func load() {
+    private func load(force: Bool = false) {
         loading = true
         loadError = nil
         Task {
-            let result = await chat.fetchCatalog()
+            let result = await chat.fetchCatalog(force: force)
             providers = result
             loading = false
             if result.isEmpty {

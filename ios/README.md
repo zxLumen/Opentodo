@@ -33,6 +33,58 @@ open Opentodo.xcodeproj
 需要付费开发者账号。Archive 后在 App Store Connect 上传构建，TestFlight 每个构建 90 天有效，
 不用连 Mac 安装。个人工具不需要真的上架 App Store。
 
+## 真机部署 + 自动续签（沿用 yijing64 / Opencode-Pocket 链路）
+
+免费个人账号的签名 7 天过期，用 Mac 上的 launchd 任务自动续签，手机端零动作。
+
+```bash
+cd ios
+
+# 1) 本地 Wi-Fi 密码（gitignore；用于 2.4G/5G 频段自动切换）
+cp scripts/wifi.local.sh.example scripts/wifi.local.sh
+# 编辑 scripts/wifi.local.sh，填入 CU_77qd / CU_77qd_5G 的密码
+
+# 2) 首次构建 + 安装 + 启动
+bash scripts/sync.sh
+
+# 3) 安装每 30 分钟检查一次的自动续签任务
+bash scripts/install-autorenew.sh
+
+# 4) 安装独立看门狗（续签脚本自己挂掉时仍能报警）
+bash scripts/install-watchdog.sh
+
+# 5) 查看状态 / 手动强制续签
+bash scripts/auto-renew.sh --status
+bash scripts/auto-renew.sh --force
+```
+
+`sync.sh` 现在会先做可达性预检：优先 USB；无线时自动在当前频段和另一频段之间尝试，
+并用 `devicectl lockState` 确认设备真的可达后再构建，结束后切回原 Wi-Fi。
+
+如果预检失败，按提示检查：
+
+- iPhone 的 **Wi-Fi 网络名**必须是 `CU_77qd_5G`（设置 → Wi-Fi 里看到的名称），
+  不是状态栏的蜂窝 5G；
+- 关掉 SideStore 的 **LocalDevVPN / StosVPN**，VPN 会挡 Bonjour；
+- 解锁手机并保持亮屏 10 秒，锁屏休眠会停止局域网广播；
+- 最稳的是插 USB 线并信任电脑，USB 不受 2.4G/5G 隔离影响；
+- Xcode → Window → Devices and Simulators → 勾选 **Connect via network**。
+
+关键点（与参考项目一致）：
+
+- 描述文件剩余 **≤ 3 天** 才触发续签；续签时先清掉本 bundle 的缓存 profile，否则 Xcode
+  会复用旧 profile，有效期不会 +7 天。
+- **手机端零动作**：续签只 `devicectl install`，不 launch；App 正在运行则本轮顺延。
+- 自家光猫会隔离同频段客户端：**Mac 连 2.4G（`CU_77qd`），iPhone 保持 5G（`CU_77qd_5G`）**
+  才可达；脚本会自动切频段并在结束后切回。
+- 通知走 `terminal-notifier`（launchd 下 `osascript` 不可靠）；日志/状态在
+  `ios/.build/auto-renew.log`、`auto-renew.state`。
+- launchd 标签：`com.opentodo.ios.autorenew`、`com.opentodo.ios.renewwatch`。
+- 免费账号同时最多 3 个 App；如果已经装了两个自签 App，再加 Opentodo 就是第三个。
+
+> 首次部署、以及每次改完 `project.yml` / Swift 代码，执行一次 `bash scripts/sync.sh`。
+> 之后日常更新只改代码，续签任务会自己处理签名到期。
+
 ## 配对同步
 
 1. Mac / Web 端先部署好带 HTTPS 的 Web 服务（见 `../web/README.md`）。

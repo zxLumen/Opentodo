@@ -13,7 +13,7 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     MARKETING_VERSION: "0.1.0"
     CODE_SIGN_STYLE: Automatic
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: T8TG4WAR43
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 
 packages:
@@ -68,3 +68,26 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.opentodo.ios.tests
         GENERATE_INFOPLIST_FILE: YES
+
+  OpentodoUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: OpentodoUITests
+    dependencies:
+      - target: Opentodo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.opentodo.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Opentodo
+
+schemes:
+  Opentodo:
+    build:
+      targets:
+        Opentodo: all
+    test:
+      targets:
+        - OpentodoTests
+        - OpentodoUITests

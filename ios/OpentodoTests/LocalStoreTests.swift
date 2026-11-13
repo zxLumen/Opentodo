@@ -59,6 +59,25 @@ final class LocalStoreTests: XCTestCase {
         XCTAssertEqual(sorted, ["B", "A"])
     }
 
+    func testMoveToGroupReordersAcrossGroups() {
+        let s = store()
+        let a = s.add(content: "A", list: "收件箱")
+        let idA = a.items.first { $0.content == "A" }!.id
+        let b = s.add(content: "B", list: "收件箱")
+        let idB = b.items.first { $0.content == "B" }!.id
+
+        let movedA = s.moveToGroup(id: idA, group: "工作", beforeId: nil)
+        XCTAssertEqual(movedA.items.first { $0.id == idA }?.project, "工作")
+
+        let movedB = s.moveToGroup(id: idB, group: "工作", beforeId: idA)
+        let group = movedB.items.filter { $0.project == "工作" }.sorted { $0.order < $1.order }
+        XCTAssertEqual(group.map(\.id), [idB, idA])
+
+        let back = s.moveToGroup(id: idB, group: nil, beforeId: nil)
+        XCTAssertNil(back.items.first { $0.id == idB }?.project)
+        XCTAssertEqual(back.items.first { $0.id == idB }?.order, 1)
+    }
+
     func testNormalizeDropsTombstonedItems() {
         let s = store()
         let file = s.add(content: "任务", list: "收件箱")
