@@ -45,6 +45,19 @@ function dueSection(title, entries) {
   return [`### ${title}（${entries.length} 条）`, '', ...(entries.length ? dueRows(entries) : ['无。']), '']
 }
 
+function dueDelta(days) {
+  if (days === 0) return '今天'
+  if (days < 0) return `逾期 ${-days} 天`
+  return `还有 ${days} 天`
+}
+
+function expiredList(entries) {
+  return entries.map(({ item, dueAt, dueInDays }) => {
+    const project = item.project ? ` / ${item.project}` : ''
+    return `- **${dueAt}**（${dueDelta(dueInDays)}）· ${item.list ?? '收件箱'}${project} · ${item.content}（\`${item.id}\`）`
+  })
+}
+
 /** 邮件里的到期分组:mailer 的 md_to_html 不渲染表格,用列表。 */
 function dueEmailSection(title, entries) {
   const lines = [`### ${title}（${entries.length} 条）`, '']
@@ -72,6 +85,7 @@ export function renderMarkdown({ file, data, scan }) {
     `- 数据文件: \`${file}\``,
     `- revision: ${data.revision ?? '—'}`,
     `- pending: ${scan.totalPending}`,
+    `- 已到期: ${scan.expiredCount}`,
     `- 超 ${scan.days} 天: ${scan.count}`,
     '',
     '## 账龄分布',
@@ -94,7 +108,8 @@ export function renderMarkdown({ file, data, scan }) {
       )
     })
   }
-  lines.push('', '## dueAt 到期判定', '', `- 未来 ${DUE_SOON_DAYS} 天内到期：${scan.due.counts.soon} 条`, `- 今天到期：${scan.due.counts.today} 条`, `- 已逾期：${scan.due.counts.overdue} 条`, '')
+  lines.push('', '## dueAt 到期判定', '', `- 已到期：${scan.due.counts.expired} 条`, `- 未来 ${DUE_SOON_DAYS} 天内到期：${scan.due.counts.soon} 条`, `- 今天到期：${scan.due.counts.today} 条`, `- 已逾期：${scan.due.counts.overdue} 条`, '')
+  lines.push(...dueSection('已到期（今天到期 + 已逾期）', scan.due.expired))
   lines.push(...dueSection(`未来 ${DUE_SOON_DAYS} 天内到期`, scan.due.soon))
   lines.push(...dueSection('今天到期', scan.due.today))
   lines.push(...dueSection('已逾期', scan.due.overdue))
@@ -108,6 +123,7 @@ export function renderEmailMarkdown({ data, scan }) {
     `# Opentodo 待办日报 · ${stamp(scan.now)}`,
     '',
     `- pending：**${scan.totalPending}** 条`,
+    `- 已到期：**${scan.expiredCount}** 条`,
     `- 超 ${scan.days} 天：**${scan.count}** 条`,
     `- revision：${data.revision ?? '—'}`,
     '- 面板：https://todo.zxlumen.cn',
@@ -115,6 +131,10 @@ export function renderEmailMarkdown({ data, scan }) {
     '## 账龄分布',
     '',
     ...scan.buckets.map((b) => `- ${b.label}：${b.count} 条`),
+    '',
+    `## 已到期 ${scan.expiredCount} 条（今天到期 + 已逾期）`,
+    '',
+    ...(scan.expired.length ? expiredList(scan.expired) : ['今天没有已到期的待办。']),
     '',
     '## dueAt 到期判定',
     '',
@@ -146,15 +166,15 @@ export function renderEmailMarkdown({ data, scan }) {
 export function buildSubject(scan) {
   const head = `Opentodo 待办提醒 · ${stamp(scan.now)}`
   const parts = []
+  if (scan.expiredCount) {
+    const { today, overdue } = scan.due.counts
+    parts.push(`已到期 ${scan.expiredCount} 条（今天 ${today} / 逾期 ${overdue}）`)
+  }
   if (scan.count) {
     const urgent = scan.overdue.filter((x) => x.ageDays > 40).length
     const tail = urgent ? `（${urgent} 条超 40 天）` : ''
     parts.push(`${scan.count} 条超 ${scan.days} 天${tail}`)
   }
-  if (scan.due.total) {
-    const { soon, today, overdue } = scan.due.counts
-    parts.push(`逾期 ${overdue} / 今天 ${today} / ${DUE_SOON_DAYS} 天内 ${soon}`)
-  }
-  if (!parts.length) return `${head}｜没有超期待办`
+  if (!parts.length) return `${head}｜没有到期或超期待办`
   return `${head}｜${parts.join('｜')}`
 }

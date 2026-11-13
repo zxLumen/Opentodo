@@ -5,6 +5,7 @@ import {
   dueDateKey,
   dueInDays,
   dueTier,
+  isExpiredDue,
   isOverduePending,
   resolveDueAt,
   scanOverdue,
@@ -143,7 +144,7 @@ test('scanOverdue:due 三档分组、排序与计数,只含 pending 未归档', 
   ]
   const scan = scanOverdue(items, { now })
   assert.equal(scan.totalPending, 7)
-  assert.deepEqual(scan.due.counts, { soon: 2, today: 1, overdue: 2 })
+  assert.deepEqual(scan.due.counts, { soon: 2, today: 1, overdue: 2, expired: 3 })
   assert.equal(scan.due.total, 5)
   assert.deepEqual(
     scan.due.soon.map((x) => x.item.id),
@@ -197,4 +198,55 @@ test('resolveDueAt:非法 dueAt 回退 content,都非法时 dueAt 输出 null', 
   )
   assert.equal(scan.due.total, 0)
   assert.equal(scan.overdue[0].dueAt, null)
+})
+
+// --- 已到期(parsed 下一步日期 <= 今天) ---
+
+test('resolveDueAt:支持「下一步 YYYY-MM-DD」无冒号写法', () => {
+  assert.equal(
+    dueDateKey(resolveDueAt(item('a', null, { content: '摩托车年检｜下一步 2026-11-13 先检测场' }))),
+    '2026-11-13',
+  )
+  assert.equal(
+    dueDateKey(resolveDueAt(item('b', null, { content: '交管局｜下一步：2026-11-13 后车管站' }))),
+    '2026-11-13',
+  )
+})
+
+test('isExpiredDue:今天与昨天为 true,未来/无日期/已完成为 false', () => {
+  const now = new Date(2026, 10, 14, 9, 0)
+  assert.equal(isExpiredDue(item('today', null, { dueAt: '2026-11-14' }), now), true)
+  assert.equal(isExpiredDue(item('yesterday', null, { dueAt: '2026-11-13' }), now), true)
+  assert.equal(isExpiredDue(item('future', null, { dueAt: '2026-11-15' }), now), false)
+  assert.equal(isExpiredDue(item('none', null, { content: '没有日期' }), now), false)
+  assert.equal(isExpiredDue(item('done', null, { dueAt: '2026-11-13', status: 'completed' }), now), false)
+})
+
+test('scanOverdue:expired 汇总今天到期与已逾期,按到期日升序', () => {
+  const now = new Date(2026, 10, 14, 9, 0)
+  const scan = scanOverdue(
+    [
+      item('today', null, { dueAt: '2026-11-14' }),
+      item('yesterday', null, { dueAt: '2026-11-13' }),
+      item('old', null, { dueAt: '2026-11-01' }),
+      item('future', null, { dueAt: '2026-11-15' }),
+      item('nodate', null, { content: '没有日期' }),
+      item('done', null, { dueAt: '2026-11-01', status: 'completed' }),
+    ],
+    { now },
+  )
+  assert.equal(scan.expiredCount, 3)
+  assert.deepEqual(
+    scan.expired.map((x) => x.item.id),
+    ['old', 'yesterday', 'today'],
+  )
+  assert.deepEqual(scan.due.counts, { soon: 1, today: 1, overdue: 2, expired: 3 })
+})
+
+test('scanOverdue:没有任何下一步日期时 expiredCount 为 0', () => {
+  const now = new Date(2026, 10, 14, 9, 0)
+  const scan = scanOverdue([item('a', null, { content: '没有日期' })], { now })
+  assert.equal(scan.expiredCount, 0)
+  assert.deepEqual(scan.expired, [])
+  assert.equal(scan.due.counts.expired, 0)
 })

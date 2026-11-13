@@ -38,7 +38,7 @@ const scan = scanOverdue(data.items, { now: NOW })
 
 test('buildSubject:有超期时带数量与超 40 天提示', () => {
   assert.equal(buildSubject(scan), 'Opentodo 待办提醒 · 2026-11-07｜2 条超 30 天（1 条超 40 天）')
-  assert.equal(buildSubject(scanOverdue([], { now: NOW })), 'Opentodo 待办提醒 · 2026-11-07｜没有超期待办')
+  assert.equal(buildSubject(scanOverdue([], { now: NOW })), 'Opentodo 待办提醒 · 2026-11-07｜没有到期或超期待办')
 })
 
 test('renderEmailMarkdown:包含完整清单、账龄分布和面板链接,不用表格', () => {
@@ -72,7 +72,7 @@ const dueScan = scanOverdue(dueData.items, { now: NOW })
 test('buildSubject:同时带 30 天账龄与 dueAt 三档数字', () => {
   assert.equal(
     buildSubject(dueScan),
-    'Opentodo 待办提醒 · 2026-11-07｜1 条超 30 天（1 条超 40 天）｜逾期 2 / 今天 1 / 7 天内 1',
+    'Opentodo 待办提醒 · 2026-11-07｜已到期 3 条（今天 1 / 逾期 2）｜1 条超 30 天（1 条超 40 天）',
   )
 })
 
@@ -122,7 +122,7 @@ test('overdue-mail CLI:只有 dueAt 到期、账龄不足 30 天也会发送', (
   )
   assert.equal(r.status, 0, r.stderr)
   const sent = fs.readFileSync(out, 'utf8')
-  assert.match(sent, /逾期 1 \/ 今天 1 \/ 7 天内 0/)
+  assert.match(sent, /已到期 2 条（今天 1 \/ 逾期 1）/)
   assert.match(sent, /已逾期：\*\*1\*\* 条/)
   assert.match(sent, /今天任务/)
 })
@@ -219,4 +219,87 @@ test('overdue-mail CLI:没有超期时默认不发', () => {
   )
   assert.equal(r.status, 0, r.stderr)
   assert.match(r.stderr, /跳过发送/)
+})
+
+// --- 已到期单列(主题/正文) ---
+
+test('buildSubject:只有已到期且无 30 天项时单列「已到期 N 条」', () => {
+  const s = scanOverdue(
+    [
+      item('today', '2026-11-01T00:00:00Z', { dueAt: '2026-11-07' }),
+      item('yesterday', '2026-11-01T00:00:00Z', { dueAt: '2026-11-06' }),
+    ],
+    { now: NOW },
+  )
+  assert.equal(
+    buildSubject(s),
+    'Opentodo 待办提醒 · 2026-11-07｜已到期 2 条（今天 1 / 逾期 1）',
+  )
+})
+
+test('renderEmailMarkdown:已到期单列今天与昨天,未来/无日期不进清单', () => {
+  const d = {
+    revision: 9,
+    items: [
+      item('today', '2026-11-01T00:00:00Z', { content: '今天任务', dueAt: '2026-11-07' }),
+      item('yesterday', '2026-11-01T00:00:00Z', { content: '昨天任务', dueAt: '2026-11-06' }),
+      item('future', '2026-11-01T00:00:00Z', { content: '未来任务', dueAt: '2026-11-30' }),
+      item('nodate', '2026-11-01T00:00:00Z', { content: '无日期任务' }),
+    ],
+  }
+  const s = scanOverdue(d.items, { now: NOW })
+  const body = renderEmailMarkdown({ data: d, scan: s })
+  assert.match(body, /## 已到期 2 条（今天到期 \+ 已逾期）/)
+  assert.match(body, /\*\*2026-11-07\*\*（今天）.*今天任务/)
+  assert.match(body, /\*\*2026-11-06\*\*（逾期 1 天）.*昨天任务/)
+  assert.doesNotMatch(body, /未来任务/)
+  assert.doesNotMatch(body, /无日期任务/)
+})
+
+test('renderEmailMarkdown:无日期且无账龄时明确没有已到期', () => {
+  const d = { revision: 10, items: [item('nodate', '2026-11-01T00:00:00Z', { content: '没有日期' })] }
+  const s = scanOverdue(d.items, { now: NOW })
+  const body = renderEmailMarkdown({ data: d, scan: s })
+  assert.match(body, /## 已到期 0 条/)
+  assert.match(body, /今天没有已到期的待办/)
+  assert.equal(buildSubject(s), 'Opentodo 待办提醒 · 2026-11-07｜没有到期或超期待办')
+})
+
+test('overdue-mail CLI:仅 content 里的已到期(无 30 天)也会发送', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opentodo-mail-expired-'))
+  const todoFile = path.join(dir, 'todos.json')
+  const mailer = path.join(dir, 'mailer.py')
+  const out = path.join(dir, 'sent.txt')
+  fs.writeFileSync(
+    todoFile,
+    JSON.stringify({
+      revision: 11,
+      items: [
+        item('today', '2026-11-01T00:00:00Z', { content: '今天任务｜下一步：2026-11-07' }),
+        item('yesterday', '2026-11-01T00:00:00Z', { content: '昨天任务｜下一步 2026-11-06' }),
+      ],
+    }),
+  )
+  fs.writeFileSync(
+    mailer,
+    [
+      'import os',
+      'def send(subject, body_md, to=None):',
+      "    with open(os.environ['MAIL_OUT'], 'w', encoding='utf-8') as f:",
+      "        f.write(subject + '\\n---\\n' + body_md)",
+      "    return True, 'mock ok'",
+      '',
+    ].join('\n'),
+  )
+
+  const r = spawnSync(
+    process.execPath,
+    ['scripts/overdue-mail.mjs', '--file', todoFile, '--now', '2026-11-07T00:00:00Z', '--mailer', mailer],
+    { cwd: path.resolve('.'), encoding: 'utf8', env: { ...process.env, MAIL_OUT: out } },
+  )
+  assert.equal(r.status, 0, r.stderr)
+  const sent = fs.readFileSync(out, 'utf8')
+  assert.match(sent, /已到期 2 条（今天 1 \/ 逾期 1）/)
+  assert.match(sent, /## 已到期 2 条/)
+  assert.match(sent, /昨天任务/)
 })

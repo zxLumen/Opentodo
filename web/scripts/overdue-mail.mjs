@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 每日待办邮件日报(只读扫描 + 复用 one-person-company/mailer.py 发送)。
-// 正文含账龄分布与 dueAt 三档(7 天内/今天/已逾期);任一口径有内容才发,避免空邮件。
+// 正文含账龄分布、已到期(今天/逾期)与 7 天内到期;只有已到期或超 30 天才发,避免空邮件。
 // --always 可强制发。
 //
 // 用法:
@@ -109,8 +109,8 @@ const scan = scanOverdue(data.items ?? [], { now, days: args.days })
 const subject = args.subject || buildSubject(scan)
 const body = renderEmailMarkdown({ data, scan })
 
-if (!scan.count && !scan.due.total && !args.always) {
-  console.error(`没有超 ${scan.days} 天或临近到期的待办,跳过发送(加 --always 可强制发)。`)
+if (!scan.count && !scan.expiredCount && !args.always) {
+  console.error(`没有已到期或超 ${scan.days} 天的待办,跳过发送(加 --always 可强制发)。`)
   process.exit(0)
 }
 

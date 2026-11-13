@@ -37,7 +37,8 @@ export interface DueScan {
   soon: DueListItem[]
   today: DueListItem[]
   overdue: DueListItem[]
-  counts: { soon: number; today: number; overdue: number }
+  expired: DueListItem[]
+  counts: { soon: number; today: number; overdue: number; expired: number }
   total: number
 }
 
@@ -48,6 +49,8 @@ export interface OverdueScan {
   buckets: AgeBucket[]
   overdue: AgedItem[]
   count: number
+  expired: DueListItem[]
+  expiredCount: number
   due: DueScan
 }
 
@@ -59,6 +62,7 @@ export function dueInDays(item: DueItem, now?: Date): number | null
 export function dueDateKey(d: Date): string
 export const DUE_TIERS: Array<{ key: DueTier; label: string }>
 export function dueTier(item: DueItem, now?: Date): DueTier | null
+export function isExpiredDue(item: DueItem, now?: Date): boolean
 export const AGE_BUCKETS: Omit<AgeBucket, 'count'>[]
 export function bucketOf(days: number | null): Omit<AgeBucket, 'count'> | null
 export function scanOverdue(

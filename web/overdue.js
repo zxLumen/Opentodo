@@ -56,7 +56,8 @@ function toDueDate(value) {
 
 function dueFromContent(content) {
   if (typeof content !== 'string') return null
-  const m = /下一步\s*[：:]\s*(\d{4}-\d{2}-\d{2})/.exec(content)
+  // 兼容「下一步：YYYY-MM-DD」与「下一步 YYYY-MM-DD」两种写法。
+  const m = /下一步\s*[：:]?\s*(\d{4}-\d{2}-\d{2})/.exec(content)
   return m ? toDueDate(m[1]) : null
 }
 
@@ -106,6 +107,13 @@ export function dueTier(item, now = new Date()) {
   return null
 }
 
+/** 是否「已到期」:到期日 <= 今天，且条目仍未完成(pending、未归档)。 */
+export function isExpiredDue(item, now = new Date()) {
+  if (!item || item.status !== 'pending' || item.archivedAt != null) return false
+  const days = dueInDays(item, now)
+  return days != null && days <= 0
+}
+
 /** 账龄分布桶:0–7 / 8–30 / 31–40 / >40。 */
 export const AGE_BUCKETS = [
   { key: '0-7', label: '0–7 天', min: 0, max: 7 },
@@ -128,11 +136,14 @@ export function bucketOf(days) {
  *   buckets: Array<{key:string,label:string,min:number,max:number,count:number}>,
  *   overdue: Array<{item:any,ageDays:number,dueAt:string|null}>,
  *   count: number,
+ *   expired: Array<{item:any,dueAt:string,dueInDays:number}>,
+ *   expiredCount: number,
  *   due: {
  *     soon: Array<{item:any,dueAt:string,dueInDays:number}>,
  *     today: Array<{item:any,dueAt:string,dueInDays:number}>,
  *     overdue: Array<{item:any,dueAt:string,dueInDays:number}>,
- *     counts: {soon:number,today:number,overdue:number},
+ *     expired: Array<{item:any,dueAt:string,dueInDays:number}>,
+ *     counts: {soon:number,today:number,overdue:number,expired:number},
  *     total: number,
  *   },
  * }}
@@ -171,6 +182,8 @@ export function scanOverdue(items, { now = new Date(), days = OVERDUE_DAYS } = {
     .map(dueEntry)
   const today = dueList.filter((x) => x.dueInDays === 0).sort(byDue).map(dueEntry)
   const dueOverdue = dueList.filter((x) => x.dueInDays < 0).sort(byDue).map(dueEntry)
+  // 「已到期」= 今天到期 + 已逾期；未来 7 天内不算。
+  const expired = dueList.filter((x) => x.dueInDays <= 0).sort(byDue).map(dueEntry)
 
   return {
     now,
@@ -179,11 +192,19 @@ export function scanOverdue(items, { now = new Date(), days = OVERDUE_DAYS } = {
     buckets,
     overdue,
     count: overdue.length,
+    expired,
+    expiredCount: expired.length,
     due: {
       soon,
       today,
       overdue: dueOverdue,
-      counts: { soon: soon.length, today: today.length, overdue: dueOverdue.length },
+      expired,
+      counts: {
+        soon: soon.length,
+        today: today.length,
+        overdue: dueOverdue.length,
+        expired: expired.length,
+      },
       total: soon.length + today.length + dueOverdue.length,
     },
   }
