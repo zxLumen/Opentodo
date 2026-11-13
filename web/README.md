@@ -37,7 +37,7 @@ npm start              # → http://localhost:8787
 
 - **面板**:`待办`段里 `pending` 且 `createdAt` 超过 30 天的条目会**标红并置顶**到「超 30 天未处理」分组,行尾显示账龄天数;分组/状态都不改。
 - **命令行**:`npm run scan:overdue -- --file <todos.json>` 输出 pending 账龄分布 + 超期清单;默认读 `~/.config/opentodo/todos.json`。支持 `--now <ISO>`(复算)、`--days 30`、`--json`、`--out <file.md>`。
-- **邮件日报**:`npm run mail:overdue -- --file <todos.json>` 生成完整清单,复用 `one-person-company/mailer.py` 发送(默认收件人 `liuzixiang@zxlumen.cn`)。没有超期条目时默认不发,`--always` 强制发;`--dry-run` 只打印不发送。
+- **邮件日报**:`npm run mail:overdue -- --file <todos.json>` 生成完整清单,含账龄分布与 dueAt 三档(未来 7 天内/今天/已逾期,附到期日与距今天数),复用 `one-person-company/mailer.py` 发送(默认收件人 `liuzixiang@zxlumen.cn`)。账龄超期或任一 dueAt 档有内容才发,`--always` 强制发;`--dry-run` 只打印不发送。
 - 纯函数在 `overdue.js` / `overdue-report.js`(Web UI 与脚本共用),扫描只读,不写 `todos.json`。
 
 线上 cron(每天 08:05,读 Docker 卷里的真相源):

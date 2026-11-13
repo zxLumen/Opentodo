@@ -135,7 +135,7 @@ node scripts/remind.mjs --days 30 --dry-run   # 只看超 30 天
 ```
 状态文件 `~/.local/state/opentodo-remind/last.json`；user timer 每天 09:00 触发。
 
-**邮件日报（当前通道）**：`web/scripts/overdue-mail.mjs` 读取同一份 `todos.json`，把 pending 超 30 天的条目汇总成 HTML 邮件，复用 `one-person-company/mailer.py` 发送（默认 `liuzixiang@zxlumen.cn`），附完整清单；无超期条目默认不发。cron 每天 08:05 触发，日志 `~/backup/logs/opentodo-overdue.log`。
+**邮件日报（当前通道）**：`web/scripts/overdue-mail.mjs` 读取同一份 `todos.json`，汇总 pending 超 30 天条目与 dueAt 三档（未来 7 天内 / 今天 / 已逾期，附到期日与距今天数），复用 `one-person-company/mailer.py` 发送（默认 `liuzixiang@zxlumen.cn`）；无超期且无 dueAt 到期条目时默认不发。cron 每天 08:05 触发，日志 `~/backup/logs/opentodo-overdue.log`。
 ```bash
 cd web
 npm run mail:overdue -- --file /var/lib/docker/volumes/docker_opentodo-data/_data/todos.json --dry-run

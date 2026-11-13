@@ -58,6 +58,75 @@ test('renderMarkdown:扫描清单仍是表格', () => {
   assert.match(body, /只读扫描,未修改任何待办/)
 })
 
+const dueData = {
+  revision: 43,
+  items: [
+    item('old-due', '2026-09-23T00:00:00Z', { content: '旧任务', dueAt: '2026-11-09' }),
+    item('today', '2026-11-01T00:00:00Z', { content: '今天任务', dueAt: '2026-11-07' }),
+    item('over', '2026-11-01T00:00:00Z', { content: '逾期任务', dueAt: '2026-11-05' }),
+    item('noage', null, { content: '无账龄逾期', dueAt: '2026-11-06', updatedAt: null }),
+  ],
+}
+const dueScan = scanOverdue(dueData.items, { now: NOW })
+
+test('buildSubject:同时带 30 天账龄与 dueAt 三档数字', () => {
+  assert.equal(
+    buildSubject(dueScan),
+    'Opentodo 待办提醒 · 2026-11-07｜1 条超 30 天（1 条超 40 天）｜逾期 2 / 今天 1 / 7 天内 1',
+  )
+})
+
+test('renderEmailMarkdown:输出 dueAt 三档数字与清单(含 dueAt/距今天数)', () => {
+  const body = renderEmailMarkdown({ data: dueData, scan: dueScan })
+  assert.match(body, /## dueAt 到期判定/)
+  assert.match(body, /未来 7 天内到期：\*\*1\*\* 条/)
+  assert.match(body, /今天到期：\*\*1\*\* 条/)
+  assert.match(body, /已逾期：\*\*2\*\* 条/)
+  assert.match(body, /\*\*2026-11-09（\+2 天）\*\* · 收件箱 · 旧任务/)
+  assert.match(body, /\*\*2026-11-07（今天）\*\* · 收件箱 · 今天任务/)
+  assert.match(body, /\*\*2026-11-05（2 天前）\*\* · 收件箱 · 逾期任务/)
+  assert.match(body, /无账龄逾期/)
+})
+
+test('overdue-mail CLI:只有 dueAt 到期、账龄不足 30 天也会发送', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opentodo-mail-due-'))
+  const todoFile = path.join(dir, 'todos.json')
+  const mailer = path.join(dir, 'mailer.py')
+  const out = path.join(dir, 'sent.txt')
+  fs.writeFileSync(
+    todoFile,
+    JSON.stringify({
+      revision: 8,
+      items: [
+        item('today', '2026-11-01T00:00:00Z', { content: '今天任务', dueAt: '2026-11-07' }),
+        item('over', '2026-11-01T00:00:00Z', { content: '逾期任务', dueAt: '2026-11-06' }),
+      ],
+    }),
+  )
+  fs.writeFileSync(
+    mailer,
+    [
+      'import os',
+      'def send(subject, body_md, to=None):',
+      "    with open(os.environ['MAIL_OUT'], 'w', encoding='utf-8') as f:",
+      "        f.write(subject + '\\n---\\n' + body_md)",
+      "    return True, 'mock ok'",
+      '',
+    ].join('\n'),
+  )
+
+  const r = spawnSync(
+    process.execPath,
+    ['scripts/overdue-mail.mjs', '--file', todoFile, '--now', '2026-11-07T00:00:00Z', '--mailer', mailer],
+    { cwd: path.resolve('.'), encoding: 'utf8', env: { ...process.env, MAIL_OUT: out } },
+  )
+  assert.equal(r.status, 0, r.stderr)
+  const sent = fs.readFileSync(out, 'utf8')
+  assert.match(sent, /逾期 1 \/ 今天 1 \/ 7 天内 0/)
+  assert.match(sent, /已逾期：\*\*1\*\* 条/)
+  assert.match(sent, /今天任务/)
+})
+
 test('overdue-scan CLI:JSON 输出包含 dueAt 字段与三档分组', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opentodo-scan-'))
   const todoFile = path.join(dir, 'todos.json')

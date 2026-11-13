@@ -45,6 +45,25 @@ function dueSection(title, entries) {
   return [`### ${title}（${entries.length} 条）`, '', ...(entries.length ? dueRows(entries) : ['无。']), '']
 }
 
+/** 邮件里的到期分组:mailer 的 md_to_html 不渲染表格,用列表。 */
+function dueEmailSection(title, entries) {
+  const lines = [`### ${title}（${entries.length} 条）`, '']
+  if (!entries.length) {
+    lines.push('无。')
+  } else {
+    for (const { item, dueAt, dueInDays } of entries) {
+      const delta =
+        dueInDays > 0 ? `+${dueInDays} 天` : dueInDays === 0 ? '今天' : `${Math.abs(dueInDays)} 天前`
+      const project = item.project ? ` / ${item.project}` : ''
+      lines.push(
+        `- **${dueAt}（${delta}）** · ${item.list ?? '收件箱'}${project} · ${item.content}（\`${item.id}\`）`,
+      )
+    }
+  }
+  lines.push('')
+  return lines
+}
+
 /** 扫描清单 Markdown(带表格,用于文档/终端)。 */
 export function renderMarkdown({ file, data, scan }) {
   const lines = [
@@ -97,6 +116,15 @@ export function renderEmailMarkdown({ data, scan }) {
     '',
     ...scan.buckets.map((b) => `- ${b.label}：${b.count} 条`),
     '',
+    '## dueAt 到期判定',
+    '',
+    `- 未来 ${DUE_SOON_DAYS} 天内到期：**${scan.due.counts.soon}** 条`,
+    `- 今天到期：**${scan.due.counts.today}** 条`,
+    `- 已逾期：**${scan.due.counts.overdue}** 条`,
+    '',
+    ...dueEmailSection(`未来 ${DUE_SOON_DAYS} 天内到期`, scan.due.soon),
+    ...dueEmailSection('今天到期', scan.due.today),
+    ...dueEmailSection('已逾期', scan.due.overdue),
     `## 超 ${scan.days} 天清单（${scan.count} 条，按天数降序）`,
     '',
   ]
@@ -114,11 +142,19 @@ export function renderEmailMarkdown({ data, scan }) {
   return lines.join('\n')
 }
 
-/** 邮件标题:0 条时也给出明确状态。 */
+/** 邮件标题:账龄与 dueAt 三档都给数字,0 条时也给出明确状态。 */
 export function buildSubject(scan) {
   const head = `Opentodo 待办提醒 · ${stamp(scan.now)}`
-  if (!scan.count) return `${head}｜没有超期待办`
-  const urgent = scan.overdue.filter((x) => x.ageDays > 40).length
-  const tail = urgent ? `（${urgent} 条超 40 天）` : ''
-  return `${head}｜${scan.count} 条超 ${scan.days} 天${tail}`
+  const parts = []
+  if (scan.count) {
+    const urgent = scan.overdue.filter((x) => x.ageDays > 40).length
+    const tail = urgent ? `（${urgent} 条超 40 天）` : ''
+    parts.push(`${scan.count} 条超 ${scan.days} 天${tail}`)
+  }
+  if (scan.due.total) {
+    const { soon, today, overdue } = scan.due.counts
+    parts.push(`逾期 ${overdue} / 今天 ${today} / ${DUE_SOON_DAYS} 天内 ${soon}`)
+  }
+  if (!parts.length) return `${head}｜没有超期待办`
+  return `${head}｜${parts.join('｜')}`
 }
