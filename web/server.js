@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url'
 import { read, update, normalizeItem } from '../mcp/lib/store.js'
 import { mergeData, mergeChanged } from '../mcp/lib/merge.js'
 import { ops, runOp } from './ops.js'
+import { renderTodayPage } from './today.js'
 import { chatState, listModels, saveSettings, setApiKey } from './settings.js'
 import { runChat } from './chat.js'
 import { readChat, writeChat } from './chatstore.js'
@@ -451,6 +452,26 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/health') return send(res, 200, { ok: true, owner: scope.owner, device: scope.device?.name ?? null })
 
+    // 浏览器默认会探 /favicon.ico;给 204,避免 /today 出现一条 404 控制台错误。
+    if (pathname === '/favicon.ico') {
+      res.writeHead(204, { 'Cache-Control': 'public, max-age=86400' })
+      return res.end()
+    }
+
+    /* ---------- 今天办(内联 HTML,手机优先;与 /api/state 同一 scope 文件) ---------- */
+    if ((pathname === '/today' || pathname === '/today/') && req.method === 'GET') {
+      let data
+      try {
+        data = read(scope.file)
+      } catch {
+        data = { revision: 0, items: [] }
+      }
+      const html = renderTodayPage({ data, owner: scope.owner, now: new Date() })
+      res.setHeader('Cache-Control', 'no-store')
+      res.setHeader('Vary', 'Accept-Encoding')
+      return sendBuffer(res, 200, MIME['.html'], Buffer.from(html), pickEncoding(req), '')
+    }
+
     if (pathname === '/api/state' && req.method === 'GET') {
       const data = read(scope.file)
       // 轻量轮询:revision 没变就 304,连 JSON 都不用传。
@@ -529,8 +550,17 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req)
       const op = String(body.op ?? '')
       if (!ops[op]) return send(res, 400, { error: `未知 op:${op}` })
-      const data = runOp(op, body, scope.file)
-      return send(res, 200, { data })
+      const baseRevision = Number.isFinite(Number(body.baseRevision)) ? Number(body.baseRevision) : undefined
+      try {
+        const data = runOp(op, body, scope.file, { baseRevision })
+        return send(res, 200, { data })
+      } catch (err) {
+        // 乐观并发冲突:把最新数据一并返回,客户端可直接用新 revision 重试一次。
+        if (err?.code === 'REVISION_CONFLICT') {
+          return send(res, 409, { error: 'revision 冲突', revision: err.revision, data: read(scope.file) })
+        }
+        throw err
+      }
     }
 
     /* ---------- 聊天设置(仅站长) ---------- */

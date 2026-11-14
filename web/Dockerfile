@@ -17,7 +17,7 @@ FROM node:22-alpine
 WORKDIR /app/web
 ENV NODE_ENV=production PORT=8787
 # 后端(纯 Node,bundled store/merge)
-COPY web/server.js web/ops.js web/chat.js web/settings.js web/providers.js web/chatstore.js web/effort.js web/effort-options.json web/devices.js ./
+COPY web/server.js web/ops.js web/chat.js web/settings.js web/providers.js web/chatstore.js web/effort.js web/effort-options.json web/devices.js web/today.js ./
 COPY mcp/lib /app/mcp/lib
 # 前端产物
 COPY --from=build /app/web/dist ./dist

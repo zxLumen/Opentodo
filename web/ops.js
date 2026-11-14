@@ -296,9 +296,19 @@ export const ops = {
 }
 
 /** 在锁里执行一个 op,返回新 data。`file` 由调用方按访客/站长决定。 */
-export function runOp(name, args = {}, file) {
+export function runOp(name, args = {}, file, options = {}) {
   const fn = ops[name]
   if (!fn) throw new Error(`未知 op:${name}`)
-  const { data } = update((d) => fn(d, args), file)
+  const baseRevision = options.baseRevision
+  const { data } = update((d) => {
+    // 乐观并发:调用方带 baseRevision 时,在文件锁内核对,避免读后写覆盖别人。
+    if (baseRevision !== undefined && baseRevision !== null && d.revision !== baseRevision) {
+      const err = new Error('revision 冲突')
+      err.code = 'REVISION_CONFLICT'
+      err.revision = d.revision
+      throw err
+    }
+    return fn(d, args)
+  }, file)
   return data
 }

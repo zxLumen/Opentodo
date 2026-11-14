@@ -39,6 +39,8 @@ export function normalizeItem(raw = {}) {
   const now = nowIso();
   const status = STATUS.includes(raw.status) ? raw.status : "pending";
   return {
+    // 先保留调用方/旧版本写入的未知字段(如 note),避免一次读写把备注吃掉。
+    ...raw,
     id: typeof raw.id === "string" && raw.id ? raw.id : newId(),
     content: String(raw.content ?? "").trim(),
     status,
@@ -49,7 +51,9 @@ export function normalizeItem(raw = {}) {
     order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 0,
     createdAt: raw.createdAt || now,
     updatedAt: raw.updatedAt || now,
-    completedAt: status === "completed" ? raw.completedAt || now : null,
+    // 已经是 completed 且没盖时间的历史条目保持 null,避免「只改 A」却顺手改到 B。
+    completedAt:
+      status === "completed" ? raw.completedAt || (raw.status === "completed" ? null : now) : null,
   };
 }
 
