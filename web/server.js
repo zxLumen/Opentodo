@@ -51,6 +51,16 @@ const OWNER_FILE = process.env.OPENTODO_FILE || path.join(DATA_DIR, 'todos.json'
 process.env.OPENTODO_FILE = OWNER_FILE
 // 访客是否也能用 AI(走站长配的 provider/model/密钥)。默认**允许**;`OPENTODO_VISITOR_AI=0` 关闭。
 const VISITOR_AI = process.env.OPENTODO_VISITOR_AI !== '0'
+// 同一设备 + 同一份完整 state 的去重窗口。0 = 关闭(退回旧行为)。
+// 客户端若每 200ms 全量推一次,服务端只做第一次合并,其余直接复用上次响应:
+// 不读文件、不拿锁、不写盘、不做 merge。
+const SYNC_DEDUPE_MS = Math.max(0, Number(process.env.OPENTODO_SYNC_DEDUPE_MS ?? 5000) || 0)
+const SYNC_CACHE_MAX = 128
+const SYNC_CACHE_BYTES_MAX = 32 * 1024 * 1024
+// 单设备持续 >2 rps 只记 warn(30s 窗口),**不返回 429、不吊销 token**:
+// 固定间隔的笨客户端收到 429 往往会更激进地重试,反而放大风暴。
+const SYNC_RPS_WARN = Math.max(0, Number(process.env.OPENTODO_SYNC_RPS_WARN ?? 2) || 0)
+const SYNC_RPS_WINDOW_MS = Math.max(1000, Number(process.env.OPENTODO_SYNC_RPS_WINDOW_MS ?? 30000) || 30000)
 
 function ownerToken() {
   if (process.env.OPENTODO_OWNER_TOKEN) return process.env.OPENTODO_OWNER_TOKEN
@@ -209,12 +219,119 @@ function send(res, status, body, headers = {}) {
   res.end(payload)
 }
 
-async function readBody(req) {
+async function readRawBody(req) {
   const chunks = []
   for await (const c of req) chunks.push(c)
-  const text = Buffer.concat(chunks).toString('utf8')
+  return Buffer.concat(chunks)
+}
+
+async function readBody(req) {
+  const text = (await readRawBody(req)).toString('utf8')
   if (!text.trim()) return {}
   return JSON.parse(text)
+}
+
+/** 数据文件指纹:缓存命中前用它确认文件没被别的端点改过。 */
+function fileStamp(file) {
+  try {
+    const st = fs.statSync(file)
+    return { mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, size: st.size, ino: st.ino }
+  } catch {
+    return null
+  }
+}
+
+function sameStamp(a, b) {
+  return !!a && !!b && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs && a.size === b.size && a.ino === b.ino
+}
+
+/** 响应 ETag:revision + 文件指纹。revision 变了或文件重写都会变。 */
+function stateEtag(data, st) {
+  const rev = Number(data?.revision) || 0
+  return `"${rev.toString(16)}-${Math.round(st?.mtimeMs || 0).toString(16)}-${(st?.size || 0).toString(16)}-${(st?.ino || 0).toString(16)}"`
+}
+
+/** /api/sync 去重缓存:key = deviceId + 请求体 sha256。 */
+const syncCache = new Map()
+const syncInflight = new Map()
+const syncDevices = new Map()
+const syncStats = { total: 0, dedup: 0, merged: 0, writes: 0, rpsWarn: 0, lastSyncAt: null }
+let syncCacheBytes = 0
+
+/**
+ * 记录单设备请求速率;持续超过阈值只 warn,不限流。
+ * 用最近 SYNC_RPS_WINDOW_MS 的请求时间戳算真实 rps;窗口填满 90% 才判定,
+ * 避免刚启动的 2~3 个请求被误报。
+ */
+function noteSyncRate(deviceId, now) {
+  if (SYNC_RPS_WARN <= 0) return
+  let d = syncDevices.get(deviceId)
+  if (!d) {
+    d = { hits: [], warnedAt: 0, since: now }
+    syncDevices.set(deviceId, d)
+  }
+  d.hits.push(now)
+  const cutoff = now - SYNC_RPS_WINDOW_MS
+  let drop = 0
+  while (drop < d.hits.length && d.hits[drop] < cutoff) drop += 1
+  if (drop) d.hits.splice(0, drop)
+  if (d.hits.length > 10000) d.hits.splice(0, d.hits.length - 10000)
+  const elapsed = Math.min(SYNC_RPS_WINDOW_MS, now - d.since)
+  if (elapsed < SYNC_RPS_WINDOW_MS * 0.9) return
+  const rps = d.hits.length / (elapsed / 1000)
+  if (rps <= SYNC_RPS_WARN) return
+  if (now - d.warnedAt < SYNC_RPS_WINDOW_MS) return
+  d.warnedAt = now
+  syncStats.rpsWarn += 1
+  console.warn(
+    `[sync_rps_warn] device=${deviceId} rps=${rps.toFixed(2)} requests=${d.hits.length} window=${Math.round(elapsed / 1000)}s action=log_only`,
+  )
+}
+
+function cacheDelete(key) {
+  const v = syncCache.get(key)
+  if (!v) return
+  syncCacheBytes -= v.bytes
+  syncCache.delete(key)
+}
+
+function cacheSet(key, hit) {
+  const prev = syncCache.get(key)
+  if (prev) syncCacheBytes -= prev.bytes
+  hit.bytes = Buffer.byteLength(hit.body)
+  syncCache.set(key, hit)
+  syncCacheBytes += hit.bytes
+}
+
+function pruneSyncCache(now) {
+  for (const [k, v] of syncCache) {
+    if (now - v.at > Math.max(SYNC_DEDUPE_MS * 10, 60_000)) cacheDelete(k)
+  }
+  for (const [id, d] of syncDevices) {
+    if (now - (d.hits[d.hits.length - 1] || 0) > SYNC_RPS_WINDOW_MS * 4) syncDevices.delete(id)
+  }
+  while (syncCache.size > SYNC_CACHE_MAX || syncCacheBytes > SYNC_CACHE_BYTES_MAX) {
+    const oldest = syncCache.keys().next().value
+    if (oldest === undefined) break
+    cacheDelete(oldest)
+  }
+}
+
+function syncPayload(res, hit, extra = {}) {
+  const dedup = !!extra.dedup
+  const body = dedup && hit.dedupBody ? hit.dedupBody : hit.body
+  const changed = dedup ? false : hit.changed
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Length': Buffer.byteLength(body),
+    ETag: hit.etag,
+    'X-Opentodo-Revision': String(hit.revision),
+    'X-Opentodo-Changed': changed ? '1' : '0',
+    'X-Opentodo-Dedup': dedup ? '1' : '0',
+    'X-Opentodo-Writes': changed ? '1' : '0',
+  })
+  return res.end(body)
 }
 
 /** 追加一条 Set-Cookie(不覆盖已设的) */
@@ -450,7 +567,26 @@ const server = http.createServer(async (req, res) => {
     if (scope.setCookies.length) res.setHeader('Set-Cookie', scope.setCookies)
     const ownerOnly = () => send(res, 403, { error: '仅站长可用' })
 
-    if (pathname === '/api/health') return send(res, 200, { ok: true, owner: scope.owner, device: scope.device?.name ?? null })
+    if (pathname === '/api/health') {
+      return send(res, 200, {
+        ok: true,
+        owner: scope.owner,
+        device: scope.device?.name ?? null,
+        // 显式计数名:验收脚本直接读 sync_dedup。
+        sync_dedup: syncStats.dedup,
+        sync_total: syncStats.total,
+        sync_merged: syncStats.merged,
+        sync_writes: syncStats.writes,
+        sync_rps_warn: syncStats.rpsWarn,
+        sync: {
+          ...syncStats,
+          dedupePct: syncStats.total ? Math.round((syncStats.dedup / syncStats.total) * 1000) / 10 : 0,
+          windowMs: SYNC_DEDUPE_MS,
+          rpsWarnThreshold: SYNC_RPS_WARN,
+          rpsWindowMs: SYNC_RPS_WINDOW_MS,
+        },
+      })
+    }
 
     // 浏览器默认会探 /favicon.ico;给 204,避免 /today 出现一条 404 控制台错误。
     if (pathname === '/favicon.ico') {
@@ -511,7 +647,16 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/sync' && req.method === 'POST') {
       if (!scope.owner) return send(res, 403, { error: '仅站长可用' })
       if (scope.viewing) return send(res, 403, { error: '查看访客时不能同步' })
-      const body = await readBody(req)
+
+      // 先按原始字节做哈希:客户端每 200ms 发同一份 40KB state 时,
+      // 后续请求命中缓存后不合并、不落盘,直接复用上一次的响应。
+      const raw = await readRawBody(req)
+      let body
+      try {
+        body = JSON.parse(raw.toString('utf8') || '{}')
+      } catch {
+        return send(res, 400, { error: '请求体必须是 JSON' })
+      }
       const state = body?.state
       if (!state || typeof state !== 'object' || !Array.isArray(state.items)) {
         return send(res, 400, { error: 'state 必须是完整的 TodoFile' })
@@ -519,31 +664,85 @@ const server = http.createServer(async (req, res) => {
       if (state.items.length > 20000) {
         return send(res, 413, { error: '待办数量超过上限' })
       }
-      let changed = false
-      const { data } = update(
-        (d) => {
-          const merged = mergeData(d, state)
-          if (mergeChanged(d, merged)) {
-            changed = true
-            d.items = merged.items
-            d.lists = merged.lists
-            d.tombstones = merged.tombstones
-            d.listTombstones = merged.listTombstones
-            d.listRenames = merged.listRenames
-            d.listsUpdatedAt = merged.listsUpdatedAt
-            d.version = 3
-          }
-          return merged
-        },
-        scope.file,
-        { onlyIfChanged: true },
-      )
-      return send(res, 200, {
-        data,
-        revision: data.revision,
-        changed,
-        serverTime: new Date().toISOString(),
-      })
+
+      const deviceId = String(body.deviceId || scope.device?.id || 'unknown').slice(0, 80)
+      const hash = crypto.createHash('sha256').update(raw).digest('hex')
+      const key = `${deviceId}:${hash}`
+      const now = Date.now()
+      syncStats.total += 1
+      syncStats.lastSyncAt = new Date(now).toISOString()
+      noteSyncRate(deviceId, now)
+
+      // 同一设备 + 同一 body,5s 内且 todos.json 没被别人改过 → 去重。
+      // 不读文件、不拿锁、不 merge、不写盘,直接回上次响应。
+      const cached = syncCache.get(key)
+      if (
+        SYNC_DEDUPE_MS > 0 &&
+        cached &&
+        now - cached.at < SYNC_DEDUPE_MS &&
+        sameStamp(cached.stamp, fileStamp(scope.file))
+      ) {
+        syncStats.dedup += 1
+        return syncPayload(res, cached, { dedup: true })
+      }
+
+      // 并发到达的同一份 body:等第一个请求合并完,直接复用结果。
+      const pending = syncInflight.get(key)
+      if (pending && now - pending.at < SYNC_DEDUPE_MS) {
+        syncStats.dedup += 1
+        return syncPayload(res, await pending.promise, { dedup: true })
+      }
+
+      syncStats.merged += 1
+      const task = (async () => {
+        const { data, changed } = update(
+          (d) => {
+            const merged = mergeData(d, state)
+            if (mergeChanged(d, merged)) {
+              d.items = merged.items
+              d.lists = merged.lists
+              d.tombstones = merged.tombstones
+              d.listTombstones = merged.listTombstones
+              d.listRenames = merged.listRenames
+              d.listsUpdatedAt = merged.listsUpdatedAt
+              d.version = 3
+            }
+            return merged
+          },
+          scope.file,
+          { onlyIfChanged: true },
+        )
+        const st = fileStamp(scope.file)
+        const payload = {
+          data,
+          revision: data.revision,
+          changed,
+          serverTime: new Date().toISOString(),
+        }
+        const hit = {
+          at: Date.now(),
+          stamp: st,
+          revision: data.revision,
+          etag: stateEtag(data, st),
+          changed,
+          body: JSON.stringify(payload),
+          // 去重命中时同一份 state 已经合并过,changed 必须改回 false,
+          // 否则客户端可能把「已确认」误读成「服务端又变了」而回写/重试。
+          dedupBody: changed ? JSON.stringify({ ...payload, changed: false }) : null,
+        }
+        cacheSet(key, hit)
+        if (changed) syncStats.writes += 1
+        pruneSyncCache(Date.now())
+        return hit
+      })()
+      syncInflight.set(key, { at: now, promise: task })
+      let hit
+      try {
+        hit = await task
+      } finally {
+        syncInflight.delete(key)
+      }
+      return syncPayload(res, hit)
     }
 
     if (pathname === '/api/op' && req.method === 'POST') {
