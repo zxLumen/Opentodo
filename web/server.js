@@ -245,6 +245,17 @@ function sameStamp(a, b) {
   return !!a && !!b && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs && a.size === b.size && a.ino === b.ino
 }
 
+/**
+ * 从原始 body 头部抠 deviceId,避免为了查缓存而 JSON.parse 整份 40KB state。
+ * 只匹配 `{"deviceId":"..."`(允许前导空白);失败就回落到完整 parse。
+ * deviceId 正常是 hex/uuid,含转义字符时直接放弃,交给 parse 保证正确。
+ */
+function fastDeviceId(raw) {
+  const head = raw.subarray(0, 256).toString('utf8')
+  const m = /^\s*\{\s*"deviceId"\s*:\s*"([^"\\]{1,80})"/.exec(head)
+  return m ? m[1] : null
+}
+
 /** 响应 ETag:revision + 文件指纹。revision 变了或文件重写都会变。 */
 function stateEtag(data, st) {
   const rev = Number(data?.revision) || 0
@@ -299,6 +310,7 @@ function cacheSet(key, hit) {
   const prev = syncCache.get(key)
   if (prev) syncCacheBytes -= prev.bytes
   hit.bytes = Buffer.byteLength(hit.body)
+  hit.dedupBytes = hit.dedupBody ? Buffer.byteLength(hit.dedupBody) : hit.bytes
   syncCache.set(key, hit)
   syncCacheBytes += hit.bytes
 }
@@ -324,7 +336,7 @@ function syncPayload(res, hit, extra = {}) {
   res.writeHead(200, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-    'Content-Length': Buffer.byteLength(body),
+    'Content-Length': dedup && hit.dedupBody ? hit.dedupBytes : hit.bytes,
     ETag: hit.etag,
     'X-Opentodo-Revision': String(hit.revision),
     'X-Opentodo-Changed': changed ? '1' : '0',
@@ -648,9 +660,37 @@ const server = http.createServer(async (req, res) => {
       if (!scope.owner) return send(res, 403, { error: '仅站长可用' })
       if (scope.viewing) return send(res, 403, { error: '查看访客时不能同步' })
 
-      // 先按原始字节做哈希:客户端每 200ms 发同一份 40KB state 时,
-      // 后续请求命中缓存后不合并、不落盘,直接复用上一次的响应。
+      // 先按原始字节做哈希,并从 body 头部抠 deviceId:命中缓存时完全不用
+      // JSON.parse 整份 40KB state(风暴里 96% 的请求走这条路径)。
       const raw = await readRawBody(req)
+      const hash = crypto.createHash('sha256').update(raw).digest('hex')
+      const now = Date.now()
+      syncStats.total += 1
+      syncStats.lastSyncAt = new Date(now).toISOString()
+
+      const authId = scope.device?.id ? String(scope.device.id).slice(0, 80) : null
+      const fastId = authId || fastDeviceId(raw)
+      if (fastId) noteSyncRate(fastId, now)
+
+      /** 命中条件:同 id + 同 hash、5s 内、且数据文件没被别的端点改过。 */
+      const lookup = (id) => {
+        if (!id || SYNC_DEDUPE_MS <= 0) return null
+        const k = `${id}:${hash}`
+        const c = syncCache.get(k)
+        if (c && now - c.at < SYNC_DEDUPE_MS && sameStamp(c.stamp, fileStamp(scope.file))) return { hit: c }
+        const p = syncInflight.get(k)
+        if (p && now - p.at < SYNC_DEDUPE_MS) return { pending: p }
+        return null
+      }
+
+      // 同一设备 + 同一 body,5s 内且 todos.json 没被别人改过 → 去重。
+      // 不读文件内容、不拿锁、不 merge、不写盘,直接回上次响应。
+      const pre = lookup(fastId)
+      if (pre) {
+        syncStats.dedup += 1
+        return syncPayload(res, pre.hit || (await pre.pending.promise), { dedup: true })
+      }
+
       let body
       try {
         body = JSON.parse(raw.toString('utf8') || '{}')
@@ -665,32 +705,17 @@ const server = http.createServer(async (req, res) => {
         return send(res, 413, { error: '待办数量超过上限' })
       }
 
-      const deviceId = String(body.deviceId || scope.device?.id || 'unknown').slice(0, 80)
-      const hash = crypto.createHash('sha256').update(raw).digest('hex')
+      const deviceId = String(body.deviceId || fastId || 'unknown').slice(0, 80)
+      if (!fastId) noteSyncRate(deviceId, now)
       const key = `${deviceId}:${hash}`
-      const now = Date.now()
-      syncStats.total += 1
-      syncStats.lastSyncAt = new Date(now).toISOString()
-      noteSyncRate(deviceId, now)
 
-      // 同一设备 + 同一 body,5s 内且 todos.json 没被别人改过 → 去重。
-      // 不读文件、不拿锁、不 merge、不写盘,直接回上次响应。
-      const cached = syncCache.get(key)
-      if (
-        SYNC_DEDUPE_MS > 0 &&
-        cached &&
-        now - cached.at < SYNC_DEDUPE_MS &&
-        sameStamp(cached.stamp, fileStamp(scope.file))
-      ) {
-        syncStats.dedup += 1
-        return syncPayload(res, cached, { dedup: true })
-      }
-
-      // 并发到达的同一份 body:等第一个请求合并完,直接复用结果。
-      const pending = syncInflight.get(key)
-      if (pending && now - pending.at < SYNC_DEDUPE_MS) {
-        syncStats.dedup += 1
-        return syncPayload(res, await pending.promise, { dedup: true })
+      // 令牌/头部里的 id 与 body 不一致(异常客户端):按真实 deviceId 再查一次。
+      if (deviceId !== fastId) {
+        const again = lookup(deviceId)
+        if (again) {
+          syncStats.dedup += 1
+          return syncPayload(res, again.hit || (await again.pending.promise), { dedup: true })
+        }
       }
 
       syncStats.merged += 1
